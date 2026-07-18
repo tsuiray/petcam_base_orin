@@ -1,0 +1,32 @@
+# Optional: run micro-ROS Agent via Docker on the Orin.
+# Useful on JetPack 5 / Ubuntu 20.04, or when you prefer not to build from source.
+#
+# Serial (USB ESP32-S3):
+#   docker compose -f docker/docker-compose.microros.yml --profile serial up
+#
+# UDP (ESP32 WiFi client -> Orin:8888):
+#   docker compose -f docker/docker-compose.microros.yml --profile udp up
+#
+# Note: official microros images are often amd64; on Orin (arm64) prefer the
+# native install scripts, or build docker/Dockerfile.microros locally.
+
+services:
+  microros-agent-serial:
+    profiles: ["serial"]
+    image: ${MICROROS_IMAGE:-microros/micro-ros-agent:humble}
+    network_mode: host
+    privileged: true
+    devices:
+      - ${SERIAL_DEV:-/dev/ttyACM0}:${SERIAL_DEV:-/dev/ttyACM0}
+    command: >
+      serial --dev ${SERIAL_DEV:-/dev/ttyACM0}
+      -b ${SERIAL_BAUD:-115200}
+      -v6
+    restart: unless-stopped
+
+  microros-agent-udp:
+    profiles: ["udp"]
+    image: ${MICROROS_IMAGE:-microros/micro-ros-agent:humble}
+    network_mode: host
+    command: udp4 --port ${UDP_PORT:-8888} -v6
+    restart: unless-stopped

@@ -1,0 +1,40 @@
+# Build micro-ROS Agent for arm64 Orin when the public image is unavailable.
+# Base: ROS 2 Humble (Ubuntu 22.04). On Jetson you may instead use a
+# dustynv/ros:humble-* L4T image and keep the same agent build steps.
+FROM ros:humble-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ROS_DISTRO=humble
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    python3-pip \
+    python3-colcon-common-extensions \
+    python3-rosdep \
+    libasio-dev \
+    libtinyxml2-dev \
+    libspdlog-dev \
+    libfmt-dev \
+    build-essential \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /microros_ws
+RUN mkdir -p src \
+    && git clone -b humble https://github.com/micro-ROS/micro_ros_setup.git src/micro_ros_setup
+
+SHELL ["/bin/bash", "-c"]
+RUN source /opt/ros/humble/setup.bash \
+    && if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then rosdep init; fi \
+    && rosdep update \
+    && rosdep install --from-paths src --ignore-src -y \
+    && colcon build --packages-select micro_ros_setup \
+    && source install/local_setup.bash \
+    && ros2 run micro_ros_setup create_agent_ws.sh \
+    && ros2 run micro_ros_setup build_agent.sh
+
+COPY docker/entrypoint_microros.sh /entrypoint_microros.sh
+RUN chmod +x /entrypoint_microros.sh
+
+ENTRYPOINT ["/entrypoint_microros.sh"]
+CMD ["udp4", "--port", "8888", "-v6"]
