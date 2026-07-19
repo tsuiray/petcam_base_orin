@@ -1,4 +1,4 @@
-"""Launch micro-ROS Agent — prioritize XRCE UDP bind for ESP32 reachability."""
+"""Launch micro-ROS Agent — must bind XRCE UDP :8888 for ESP32."""
 
 import os
 
@@ -19,10 +19,10 @@ def _build_agent(context, *args, **kwargs):
         summary = f"serial {serial_dev} @ {serial_baud}"
     elif transport in ("udp4", "udp"):
         agent_cli = f"udp4 --port {port} -v{verbose}"
-        summary = f"udp4 port {port} (0.0.0.0)"
+        summary = f"udp4 --port {port}"
     elif transport in ("tcp4", "tcp"):
         agent_cli = f"tcp4 --port {port} -v{verbose}"
-        summary = f"tcp4 port {port}"
+        summary = f"tcp4 --port {port}"
     else:
         raise RuntimeError(
             f"Unsupported transport '{transport}'. Use serial, udp4, or tcp4."
@@ -32,14 +32,19 @@ def _build_agent(context, *args, **kwargs):
     microros_ws = os.environ.get("MICROROS_WS", os.path.expanduser("~/microros_ws"))
     fastdds_xml = os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE", "")
 
-    # IMPORTANT: do NOT require ROS_DISCOVERY_SERVER here.
-    # If DDS client mode cannot reach a discovery server, agent init can fail
-    # and never bind XRCE :8888 → ESP32 reports "agent not reachable".
+    # NOTE: do NOT use `set -u` here. ROS setup.bash references optional
+    # AMENT_* vars and aborts under nounset — agent never binds :8888.
     cmd = f"""
-set -euo pipefail
+set -e
+echo "[petcam] === micro_ros_agent starting ({summary}) ==="
 source /opt/ros/{ros_distro}/setup.bash
 if [ -f "{microros_ws}/install/local_setup.bash" ]; then
   source "{microros_ws}/install/local_setup.bash"
+  echo "[petcam] sourced {microros_ws}/install/local_setup.bash"
+else
+  echo "[petcam] ERROR: {microros_ws}/install/local_setup.bash missing" >&2
+  echo "[petcam] Run: ./scripts/install_microros_agent.sh" >&2
+  exit 1
 fi
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
@@ -47,25 +52,24 @@ unset ROS_DISCOVERY_SERVER || true
 if [ -n "{fastdds_xml}" ] && [ -f "{fastdds_xml}" ]; then
   export FASTRTPS_DEFAULT_PROFILES_FILE="{fastdds_xml}"
 fi
-echo "[petcam] Starting micro_ros_agent {summary}"
-echo "[petcam] MICROROS_WS={microros_ws}"
-if ! ros2 pkg prefix micro_ros_agent >/dev/null 2>&1; then
-  echo "[petcam] ERROR: micro_ros_agent not found. Run scripts/install_microros_agent.sh" >&2
+if ! ros2 pkg prefix micro_ros_agent; then
+  echo "[petcam] ERROR: micro_ros_agent package not found after sourcing" >&2
   exit 1
 fi
-# Free stale listener on the XRCE port (UDP)
 if command -v fuser >/dev/null 2>&1; then
   fuser -k {port}/udp 2>/dev/null || true
 fi
+echo "[petcam] exec: ros2 run micro_ros_agent micro_ros_agent {agent_cli}"
 exec ros2 run micro_ros_agent micro_ros_agent {agent_cli}
 """
 
     return [
-        LogInfo(msg=f"[petcam] micro_ros_agent launch: {summary}"),
+        LogInfo(msg=f"[petcam] Launching micro_ros_agent ({summary})"),
         ExecuteProcess(
-            cmd=["bash", "-lc", cmd],
+            cmd=["bash", "-c", cmd],
             output="screen",
             name="micro_ros_agent",
+            shell=False,
         ),
     ]
 
@@ -76,27 +80,27 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "transport",
                 default_value="udp4",
-                description="XRCE transport: udp4 | serial | tcp4 (ESP32 uses udp4)",
+                description="XRCE transport: udp4 | serial | tcp4",
             ),
             DeclareLaunchArgument(
                 "serial_dev",
                 default_value="/dev/ttyACM0",
-                description="Serial device path for ESP32-S3 USB CDC",
+                description="Serial device for ESP32 USB",
             ),
             DeclareLaunchArgument(
                 "serial_baud",
                 default_value="115200",
-                description="Serial baud rate (must match ESP32 client)",
+                description="Serial baud rate",
             ),
             DeclareLaunchArgument(
                 "port",
                 default_value="8888",
-                description="UDP/TCP port for network XRCE transport",
+                description="UDP XRCE port (ESP32 MICROROS_AGENT_PORT)",
             ),
             DeclareLaunchArgument(
                 "verbose",
                 default_value="6",
-                description="micro-ROS agent verbosity 0..6",
+                description="Agent verbosity 0..6",
             ),
             OpaqueFunction(function=_build_agent),
         ]

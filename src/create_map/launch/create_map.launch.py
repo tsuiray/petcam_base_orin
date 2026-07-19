@@ -79,30 +79,27 @@ def generate_launch_description():
                     'port': LaunchConfiguration('port'),
                 }.items(),
             ),
+            # Start create_map nodes after agent has time to bind :8888
             TimerAction(
-                period=2.0,
+                period=3.0,
                 actions=[
                     ExecuteProcess(
                         cmd=[
                             'bash',
-                            '-lc',
+                            '-c',
                             'P="${PETCAM_AGENT_PORT:-8888}"; '
                             'if ss -uln 2>/dev/null | grep -E ":$P[[:space:]]" >/dev/null; then '
-                            '  echo "[petcam] OK: UDP $P is listening — ESP32 should reach agent"; '
+                            '  echo "[petcam] OK: UDP $P is listening — ESP32 can reach agent"; '
                             '  ss -ulnp 2>/dev/null | grep -E ":$P[[:space:]]" || true; '
                             'else '
-                            '  echo "[petcam] ERROR: UDP $P NOT listening — ESP32 will say agent not reachable" >&2; '
-                            '  echo "[petcam] Fix: ./scripts/run_microros_agent.sh   or check install_microros_agent.sh" >&2; '
+                            '  echo "[petcam] ERROR: UDP $P NOT listening — agent failed (see micro_ros_agent log)" >&2; '
+                            '  echo "[petcam] Try standalone: ./scripts/run_microros_agent.sh" >&2; '
+                            '  pgrep -af micro_ros_agent || echo "[petcam] no micro_ros_agent process" >&2; '
                             'fi',
                         ],
                         additional_env={'PETCAM_AGENT_PORT': LaunchConfiguration('port')},
                         output='screen',
-                    )
-                ],
-            ),
-            TimerAction(
-                period=1.0,
-                actions=[
+                    ),
                     Node(
                         package='create_map',
                         executable='mock_imu',
