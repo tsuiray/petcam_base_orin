@@ -54,6 +54,7 @@ def _setup(context, *args, **kwargs):
     public_port = LaunchConfiguration('port').perform(context)
     agent_port = LaunchConfiguration('agent_port').perform(context)
     verbose = LaunchConfiguration('verbose').perform(context)
+    imu_mode = LaunchConfiguration('imu_mode').perform(context)
     use_bridge = LaunchConfiguration('use_xrce_bridge').perform(context).lower() in (
         '1',
         'true',
@@ -151,8 +152,10 @@ exec ros2 run create_map xrce_imu_bridge --ros-args \
                 '-c',
                 _overlay(
                     """
-echo "[petcam] imu_odometry (subscribes /imu/data BEST_EFFORT)"
-exec ros2 run create_map imu_odometry --ros-args -r __node:=imu_odometry
+echo "[petcam] imu_odometry imu_mode={imu_mode} (ESP32 SIM=world+20ms, REAL=body)"
+exec ros2 run create_map imu_odometry --ros-args \
+  -r __node:=imu_odometry \
+  -p imu_mode:={imu_mode}
 """
                 ),
             ],
@@ -210,6 +213,11 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument('use_mock_imu', default_value='false'),
             DeclareLaunchArgument('use_xrce_bridge', default_value='false'),
+            DeclareLaunchArgument(
+                'imu_mode',
+                default_value='sim',
+                description='sim=ESP32 L-home world-frame+fixed 20ms; real=MPU6050 body',
+            ),
             DeclareLaunchArgument('start_microros_agent', default_value='true'),
             DeclareLaunchArgument('port', default_value='8888'),
             DeclareLaunchArgument('agent_port', default_value='8887'),

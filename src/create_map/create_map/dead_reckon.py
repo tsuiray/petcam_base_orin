@@ -1,4 +1,4 @@
-"""Dead-reckon 2D pose from MPU6050 IMU using per-packet time deltas."""
+"""Dead-reckon 2D pose from IMU — body-frame (REAL) or world-frame (ESP32 SIM)."""
 
 from __future__ import annotations
 
@@ -29,7 +29,6 @@ class OdomState:
     vy: float = 0.0
     path_xy: List[Tuple[float, float]] = field(default_factory=list)
     distance_m: float = 0.0
-    # Debug / HUD fields (last sample)
     dt: float = 0.0
     dt_raw: float = 0.0
     ax_raw: float = 0.0
@@ -45,13 +44,23 @@ class OdomState:
 
 
 class ImuDeadReckoner:
-    """Integrate gyro yaw + horizontal accel with measured dt between packets."""
+    """Integrate horizontal accel (+ optional gyro yaw).
+
+    accel_frame:
+      - ``body``: REAL MPU6050 — rotate by yaw into map
+      - ``world``: ESP32 SIM — ax/ay already world-frame; do not rotate
+    use_fixed_dt:
+      - True: each sample is exactly ``default_dt_sec`` (20 ms for ESP32 SIM)
+      - False: dt from packet timestamps / receive times
+    """
 
     def __init__(
         self,
         *,
         gravity: float = 9.80665,
         accel_in_g: bool = False,
+        accel_frame: str = 'body',
+        use_fixed_dt: bool = False,
         enable_zupt: bool = True,
         zupt_accel_epsilon: float = 0.45,
         zupt_gyro_epsilon: float = 0.15,
@@ -65,6 +74,8 @@ class ImuDeadReckoner:
     ) -> None:
         self.gravity = gravity
         self.accel_in_g = accel_in_g
+        self.accel_frame = accel_frame if accel_frame in ('body', 'world') else 'body'
+        self.use_fixed_dt = use_fixed_dt
         self.enable_zupt = enable_zupt
         self.zupt_accel_epsilon = zupt_accel_epsilon
         self.zupt_gyro_epsilon = zupt_gyro_epsilon
@@ -124,7 +135,7 @@ class ImuDeadReckoner:
                 self.state.ax_raw = ax
                 self.state.ay_raw = ay
                 self.state.path_appended = True
-                return self.state  # publish origin immediately after calib
+                return self.state
             return None
 
         if self._prev_stamp is None:
@@ -137,56 +148,75 @@ class ImuDeadReckoner:
         dt_raw = sample.stamp_sec - self._prev_stamp
         self._prev_stamp = sample.stamp_sec
 
-        # Duplicate / out-of-order: ignore this sample for integration
-        if dt_raw < self.min_dt_sec:
-            self.state.dt = dt_raw
-            self.state.dt_raw = dt_raw
-            self.state.path_appended = False
-            return self.state
-
-        # Large gaps (DDS drops, ms stamp jumps): CLAMP instead of dropping forever.
-        # Old behavior (drop if dt>max) left path stuck at 1 point.
         dt_clamped = False
-        if dt_raw > self.max_dt_sec:
+        if self.use_fixed_dt:
+            # ESP32 SIM: each published sample represents exactly default_dt_sec
+            # of motion, independent of Wi-Fi / DDS receive jitter.
             dt = self.default_dt_sec
-            dt_clamped = True
-            self.samples_clamped_dt += 1
-            # Gap: don't trust coasting velocity across a hole
-            self.state.vx = 0.0
-            self.state.vy = 0.0
-            self._still_sec = 0.0
+            if dt_raw < self.min_dt_sec:
+                # Still integrate — sample is valid content, only stamp/receive
+                # time collided. Do not drop (burst delivery is common).
+                pass
         else:
-            dt = dt_raw
+            if dt_raw < self.min_dt_sec:
+                self.state.dt = dt_raw
+                self.state.dt_raw = dt_raw
+                self.state.path_appended = False
+                return self.state
+            if dt_raw > self.max_dt_sec:
+                dt = self.default_dt_sec
+                dt_clamped = True
+                self.samples_clamped_dt += 1
+                self.state.vx = 0.0
+                self.state.vy = 0.0
+                self._still_sec = 0.0
+            else:
+                dt = dt_raw
 
-        # Body-frame horizontal accel with simple bias removal
         ax_b = ax - self._bias_ax
         ay_b = ay - self._bias_ay
 
-        # Integrate yaw from gyro z (rad/s)
+        # Yaw from gyro (pose display); SIM also sends gz during turns.
         self.state.yaw = _wrap_pi(self.state.yaw + sample.gz * dt)
         c = math.cos(self.state.yaw)
         s = math.sin(self.state.yaw)
 
-        # Rotate body accel into map/world (2D floor plane)
-        ax_w = c * ax_b - s * ay_b
-        ay_w = s * ax_b + c * ay_b
+        if self.accel_frame == 'world':
+            # ESP32 imu_sim: ax/ay are already map/world frame.
+            ax_w = ax_b
+            ay_w = ay_b
+        else:
+            ax_w = c * ax_b - s * ay_b
+            ay_w = s * ax_b + c * ay_b
 
         gyro_norm = math.sqrt(
             sample.gx * sample.gx + sample.gy * sample.gy + sample.gz * sample.gz
         )
-        accel_norm = math.sqrt(ax * ax + ay * ay + az * az)
-        sample_still = (
-            abs(accel_norm - self.gravity) < self.zupt_accel_epsilon
-            and gyro_norm < self.zupt_gyro_epsilon
-            and math.hypot(ax_b, ay_b) < self.zupt_accel_epsilon
-        )
+        horiz = math.hypot(ax_b, ay_b)
+
+        if self.accel_frame == 'world':
+            # SIM has az=0 (no gravity). Stillness = near-zero horizontal accel + gyro.
+            sample_still = horiz < self.zupt_accel_epsilon and gyro_norm < self.zupt_gyro_epsilon
+        else:
+            accel_norm = math.sqrt(ax * ax + ay * ay + az * az)
+            sample_still = (
+                abs(accel_norm - self.gravity) < self.zupt_accel_epsilon
+                and gyro_norm < self.zupt_gyro_epsilon
+                and horiz < self.zupt_accel_epsilon
+            )
 
         if sample_still:
             self._still_sec += dt
         else:
             self._still_sec = 0.0
 
-        zupt_active = self.enable_zupt and self._still_sec >= self.zupt_hold_sec
+        # SIM corners publish a=0 settle samples; snap velocity quickly so laps overlap.
+        zupt_hold = (
+            min(self.zupt_hold_sec, 3.0 * self.default_dt_sec)
+            if self.accel_frame == 'world'
+            else self.zupt_hold_sec
+        )
+        zupt_active = self.enable_zupt and self._still_sec >= zupt_hold
         if zupt_active:
             self.state.vx = 0.0
             self.state.vy = 0.0

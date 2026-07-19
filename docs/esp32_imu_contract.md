@@ -2,16 +2,17 @@
 
 Source firmware:
 - Repo: https://github.com/tsuiray/petcam_esp32_s3
-- Branch: `cursor/esp32-arduino-hardening-26d4`
-- Sketch: `esp32/esp32.ino`
+- Branch: **`main`** (SIM L-home) — older hardening branch has no `imu_sim.*`
+- Sketch: `esp32.ino` + `imu_sim.cpp` (SIM) or `mpu6050.cpp` (REAL)
 
 ## Transport
 
 | Item | Value |
 |------|-------|
 | Link | Wi‑Fi STA on same home AP as Orin |
-| micro-ROS agent | Orin UDP `MICROROS_AGENT_PORT` **8888** |
-| Agent IP | Orin LAN IP (`MICROROS_AGENT_IP` in `board_config.local.h`) |
+| micro-ROS agent | Orin UDP **8888** |
+| Agent IP | Orin LAN IP (`MICROROS_AGENT_IP`) |
+| Rate | **50 Hz** — each sample = **20 ms** of motion |
 
 ## ROS interface
 
@@ -20,32 +21,49 @@ Source firmware:
 | Node | `petcam_esp32_imu` |
 | Topic | `/imu/data` |
 | Type | `sensor_msgs/msg/Imu` |
-| QoS | **BEST_EFFORT** (`rclc_publisher_init_best_effort`) |
-| Rate | **50 Hz** (`IMU_PUBLISH_PERIOD_MS = 20`) |
-| `header.frame_id` | `imu_link` |
-| Stamp | `rmw_uros_epoch_millis()` (synced when agent ping/sync OK) |
+| QoS | **BEST_EFFORT** |
 
-### Units (from `mpu6050.cpp`)
+## SIM mode (`IMU_DATA_MODE_SIM`) — default on ESP32 `main`
+
+Publishes a **closed L-home** (~490 sq ft / 45.5 m²):
+
+```
+(0,7)----(4.5,7)
+  |            |
+  |      (4.5,4)----(8,4)
+  |                   |
+(0,0)----------------(8,0)
+```
+
+| Field | SIM meaning |
+|-------|-------------|
+| `linear_acceleration.x/y` | **World-frame** m/s² (already in map axes) |
+| `linear_acceleration.z` | **0** (no gravity) |
+| `angular_velocity.z` | Yaw rate during corner turns |
+| Intent | Naive Euler `v+=a*dt; x+=v*dt` with **fixed dt=0.02** redraws the same polygon each lap |
+
+Orin create_map must use `imu_mode:=sim` (default):
+- `accel_frame=world` (do **not** rotate by yaw)
+- `use_fixed_dt=true` (ignore Wi‑Fi receive jitter)
+- no 1 s bias calib during motion
+- expect **~50 messages/second**
+
+## REAL mode (`IMU_DATA_MODE_REAL`)
 
 | Field | Unit |
 |-------|------|
-| `linear_acceleration.{x,y,z}` | **m/s²** (±2g scale) |
-| `angular_velocity.{x,y,z}` | **rad/s** (±250 dps scale) |
-| `orientation` | identity placeholder; covariance `[0] = -1` |
+| accel | body-frame m/s² (±2g) |
+| gyro | rad/s (±250 dps) |
+| `az` | ≈ +g at rest |
 
-## Orin create_map expectations
+```bash
+./scripts/run_create_map.sh imu_mode:=real
+```
 
-`create_map` already matches this contract:
+## Verify
 
 ```bash
 ./scripts/run_create_map.sh
-# agent udp4:8888 + subscribe /imu/data BEST_EFFORT + map window
-```
-
-Verify link:
-
-```bash
-ros2 topic hz /imu/data          # ~50 Hz
-ros2 topic echo /imu/data --once
-ros2 node list                   # expect petcam_esp32_imu (+ agent side)
+# look for: /imu/data rate: ~50 Hz (expect ~50 Hz / 20 ms per sample)
+# L-path should overlap on lap 2+
 ```

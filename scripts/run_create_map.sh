@@ -39,8 +39,9 @@ command -v fuser >/dev/null && fuser -k 8887/udp 2>/dev/null || true
 
 echo "==> Orin Wi-Fi IP (ESP32 MICROROS_AGENT_IP / port 8888):"
 ip -4 addr show scope global | sed -n 's/.*inet \([0-9.]*\).*/  \1/p' || true
-echo "==> Mode: micro_ros_agent udp4 :8888 → /imu/data → imu_odometry (BEST_EFFORT)"
-echo "==> Expect: agent 'datawriter created' then imu_odometry 'Receiving /imu/data'"
-echo "==> Fallback if DDS still silent: ./scripts/run_create_map.sh use_xrce_bridge:=true"
+echo "==> Mode: micro_ros_agent udp4 :8888 → /imu/data → imu_odometry"
+echo "==> Default imu_mode:=sim (ESP32 L-home: world-frame accel, fixed 20 ms/sample, ~50 Hz)"
+echo "==> REAL MPU6050: ./scripts/run_create_map.sh imu_mode:=real"
+echo "==> Expect log: '/imu/data rate: ~50 Hz' and L-path that overlaps each lap"
 
 exec ros2 launch create_map create_map.launch.py verbose:=4 "$@"

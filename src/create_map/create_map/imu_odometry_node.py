@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Subscribe to ESP32 MPU6050 IMU and publish dead-reckoned path/pose."""
+"""Subscribe to ESP32 IMU and publish dead-reckoned path/pose."""
 
 from __future__ import annotations
 
 import math
+import time
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, Quaternion, TransformStamped, Twist
@@ -33,6 +34,17 @@ def yaw_to_quat(yaw: float) -> Quaternion:
     return q
 
 
+def _resolve_imu_mode(mode: str) -> str:
+    m = (mode or 'sim').strip().lower()
+    if m in ('sim', 'simulation', 'world'):
+        return 'sim'
+    if m in ('real', 'body', 'mpu', 'mpu6050'):
+        return 'real'
+    if m == 'auto':
+        return 'auto'
+    return 'sim'
+
+
 class ImuOdometryNode(Node):
     def __init__(self) -> None:
         super().__init__('imu_odometry')
@@ -42,7 +54,11 @@ class ImuOdometryNode(Node):
         self.declare_parameter('prefer_raw', False)
         self.declare_parameter('frame_id', 'map')
         self.declare_parameter('child_frame_id', 'base_link')
+        # imu_mode: sim (ESP32 L-home world-frame) | real (MPU6050 body) | auto
+        self.declare_parameter('imu_mode', 'sim')
         self.declare_parameter('use_receive_time', True)
+        self.declare_parameter('use_fixed_dt', True)
+        self.declare_parameter('accel_frame', 'world')
         self.declare_parameter('max_dt_sec', 0.05)
         self.declare_parameter('min_dt_sec', 0.0001)
         self.declare_parameter('default_dt_sec', 0.02)
@@ -52,7 +68,7 @@ class ImuOdometryNode(Node):
         self.declare_parameter('zupt_accel_epsilon', 0.45)
         self.declare_parameter('zupt_gyro_epsilon', 0.15)
         self.declare_parameter('zupt_hold_sec', 0.35)
-        self.declare_parameter('calibrate_on_start_sec', 1.0)
+        self.declare_parameter('calibrate_on_start_sec', 0.0)
         self.declare_parameter('path_max_poses', 5000)
         self.declare_parameter('path_min_step_m', 0.0005)
         self.declare_parameter('publish_tf', True)
@@ -63,20 +79,36 @@ class ImuOdometryNode(Node):
         self.use_receive_time = bool(self.get_parameter('use_receive_time').value)
         prefer_raw = bool(self.get_parameter('prefer_raw').value)
         self.imu_topic = str(self.get_parameter('imu_topic').value)
+        self.imu_mode = _resolve_imu_mode(str(self.get_parameter('imu_mode').value))
+
+        accel_frame, use_fixed_dt, calib_sec, zupt_eps = self._mode_defaults()
+        # Explicit params override mode defaults when set via launch/CLI.
+        if self.has_parameter('accel_frame'):
+            af = str(self.get_parameter('accel_frame').value).lower()
+            if af in ('body', 'world'):
+                accel_frame = af
+        use_fixed_dt = bool(self.get_parameter('use_fixed_dt').value)
+        calib_sec = float(self.get_parameter('calibrate_on_start_sec').value)
 
         self.reckoner = ImuDeadReckoner(
             gravity=float(self.get_parameter('gravity').value),
             accel_in_g=bool(self.get_parameter('accel_in_g').value),
+            accel_frame=accel_frame,
+            use_fixed_dt=use_fixed_dt,
             enable_zupt=bool(self.get_parameter('enable_zupt').value),
-            zupt_accel_epsilon=float(self.get_parameter('zupt_accel_epsilon').value),
-            zupt_gyro_epsilon=float(self.get_parameter('zupt_gyro_epsilon').value),
+            zupt_accel_epsilon=float(self.get_parameter('zupt_accel_epsilon').value)
+            if self.imu_mode != 'sim'
+            else min(float(self.get_parameter('zupt_accel_epsilon').value), 0.08),
+            zupt_gyro_epsilon=float(self.get_parameter('zupt_gyro_epsilon').value)
+            if self.imu_mode != 'sim'
+            else min(float(self.get_parameter('zupt_gyro_epsilon').value), 0.08),
             zupt_hold_sec=float(self.get_parameter('zupt_hold_sec').value),
             max_dt_sec=float(self.get_parameter('max_dt_sec').value),
             min_dt_sec=float(self.get_parameter('min_dt_sec').value),
             default_dt_sec=float(self.get_parameter('default_dt_sec').value),
             path_max_poses=int(self.get_parameter('path_max_poses').value),
             path_min_step_m=float(self.get_parameter('path_min_step_m').value),
-            calibrate_on_start_sec=float(self.get_parameter('calibrate_on_start_sec').value),
+            calibrate_on_start_sec=calib_sec,
         )
 
         self.path_pub = self.create_publisher(Path, '/create_map/path', 10)
@@ -87,8 +119,13 @@ class ImuOdometryNode(Node):
         self.tf_broadcaster = TransformBroadcaster(self) if self.publish_tf else None
 
         self._imu_subs = []
-        self._last_cb_ns = 0
         self._imu_via = ''
+        self._msg_count = 0
+        self._rate_count = 0
+        self._rate_t0 = time.monotonic()
+        self._last_hz = 0.0
+        self._auto_az: list[float] = []
+        self._mode_locked = self.imu_mode != 'auto'
 
         if prefer_raw:
             raw_topic = self.get_parameter('raw_imu_topic').value
@@ -99,29 +136,86 @@ class ImuOdometryNode(Node):
             )
             self.get_logger().info(f'Subscribing raw IMU on {raw_topic}')
         else:
-            # Must match xrce_imu_bridge / ESP32 BEST_EFFORT.
-            # A RELIABLE sub is INCOMPATIBLE and can prevent message delivery.
             self._imu_subs.append(
                 self.create_subscription(
                     Imu, self.imu_topic, self._on_imu, _qos_best_effort()
                 )
             )
-            self.get_logger().info(
-                f'Subscribing {self.imu_topic} BEST_EFFORT '
-                f'(dt from {"receive time" if self.use_receive_time else "msg stamp"})'
-            )
 
         self._path_msg = Path()
         self._path_msg.header.frame_id = self.frame_id
-        self._msg_count = 0
         self._last_state = None
         self._calibrating = True
         self.create_timer(0.5, self._heartbeat)
+        self.create_timer(1.0, self._log_rate)
         self.create_timer(2.0, self._discover_imu)
+
+        dt_ms = float(self.get_parameter('default_dt_sec').value) * 1000.0
         self.get_logger().info(
-            'create_map imu_odometry ready — /create_map/debug heartbeat on. '
-            'Waiting for /imu/data (micro_ros_agent or xrce_imu_bridge).'
+            f'imu_odometry mode={self.imu_mode} accel_frame={self.reckoner.accel_frame} '
+            f'fixed_dt={self.reckoner.use_fixed_dt} (expect {dt_ms:.0f} ms/sample, ~'
+            f'{1.0 / float(self.get_parameter("default_dt_sec").value):.0f} Hz) '
+            f'calib={calib_sec:.2f}s'
         )
+        self.get_logger().info(
+            'Waiting for /imu/data — ESP32 SIM needs world-frame+fixed 20ms; '
+            'REAL MPU needs imu_mode:=real'
+        )
+
+    def _mode_defaults(self):
+        if self.imu_mode == 'real':
+            return 'body', False, 1.0, 0.45
+        if self.imu_mode == 'sim':
+            return 'world', True, 0.0, 0.08
+        # auto: start as sim until az seen
+        return 'world', True, 0.0, 0.08
+
+    def _maybe_autodetect(self, az: float) -> None:
+        if self._mode_locked:
+            return
+        self._auto_az.append(abs(az))
+        if len(self._auto_az) < 25:
+            return
+        med = sorted(self._auto_az)[len(self._auto_az) // 2]
+        if med < 1.0:
+            self.imu_mode = 'sim'
+            self.reckoner.accel_frame = 'world'
+            self.reckoner.use_fixed_dt = True
+            self.reckoner.calibrate_on_start_sec = 0.0
+            self.reckoner._calibrated = True
+            self.get_logger().info(
+                f'imu_mode auto→sim (|az| median={med:.2f}); world-frame + fixed 20ms'
+            )
+        else:
+            self.imu_mode = 'real'
+            self.reckoner.accel_frame = 'body'
+            self.reckoner.use_fixed_dt = False
+            self.reckoner.calibrate_on_start_sec = 1.0
+            self.reckoner._calibrated = False
+            self.reckoner._calib_samples.clear()
+            self.reckoner._calib_start = None
+            self.get_logger().info(
+                f'imu_mode auto→real (|az| median={med:.2f}); body-frame + calib'
+            )
+        self._mode_locked = True
+
+    def _log_rate(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._rate_t0
+        if elapsed < 0.5:
+            return
+        hz = self._rate_count / elapsed
+        self._last_hz = hz
+        if self._msg_count > 0:
+            expect = 1.0 / float(self.get_parameter('default_dt_sec').value)
+            self.get_logger().info(
+                f'/imu/data rate: {hz:.1f} Hz '
+                f'(expect ~{expect:.0f} Hz / {1000.0 / expect:.0f} ms per sample) '
+                f'total={self._msg_count} integ={self.reckoner.samples_integrated} '
+                f'dt={self.reckoner.state.dt * 1000:.1f}ms'
+            )
+        self._rate_count = 0
+        self._rate_t0 = now
 
     def _discover_imu(self) -> None:
         if self._msg_count > 0:
@@ -134,9 +228,7 @@ class ImuOdometryNode(Node):
         if not pubs:
             self.get_logger().warn(
                 f'No DDS publisher on {self.imu_topic} yet. '
-                'If agent shows XRCE hex but this persists, agent/create_map '
-                'are on different FastDDS. Use: ./scripts/run_create_map.sh '
-                '(unified overlay). Check: ros2 topic list | grep imu'
+                'Check: ./scripts/run_create_map.sh and ESP32 agent IP:8888'
             )
             return
         parts = []
@@ -146,10 +238,7 @@ class ImuOdometryNode(Node):
             parts.append(f'{p.node_name}[{rel}/{dur}]')
         self.get_logger().warn(
             f'{self.imu_topic} has {len(pubs)} publisher(s): {", ".join(parts)} '
-            f'but imu_odometry got 0 msgs. If only handshake reached the agent, '
-            f'ESP32 may have lost ping — use agent on :8888 (default). '
-            f'If agent shows XRCE DATA hex but still 0 msgs: '
-            f'./scripts/run_create_map.sh use_xrce_bridge:=true'
+            f'but imu_odometry got 0 msgs'
         )
 
     def _publish_debug(
@@ -177,7 +266,6 @@ class ImuOdometryNode(Node):
         integ=0.0,
         status=0.0,
     ) -> None:
-        """status: 0=waiting_imu 1=calibrating 2=running"""
         dbg = Float64MultiArray()
         dbg.data = [
             float(dt),
@@ -202,6 +290,7 @@ class ImuOdometryNode(Node):
             float(integ),
             float(status),
             float(self._msg_count),
+            float(self._last_hz),
         ]
         self.debug_pub.publish(dbg)
 
@@ -224,7 +313,8 @@ class ImuOdometryNode(Node):
         )
 
     def _integration_stamp_sec(self, msg_stamp) -> float:
-        if self.use_receive_time:
+        # Even with fixed_dt, keep a monotonic clock for ordering / debug dt_raw.
+        if self.use_receive_time or self.reckoner.use_fixed_dt:
             return self.get_clock().now().nanoseconds * 1e-9
         sec = float(msg_stamp.sec) + float(msg_stamp.nanosec) * 1e-9
         if sec <= 0.0:
@@ -232,20 +322,21 @@ class ImuOdometryNode(Node):
         return sec
 
     def _on_imu(self, msg: Imu, src: str = '') -> None:
-        now_ns = self.get_clock().now().nanoseconds
-        if self._last_cb_ns and (now_ns - self._last_cb_ns) < 1_000_000:
-            return
-        self._last_cb_ns = now_ns
+        # Do NOT drop back-to-back samples: Wi-Fi/DDS often bursts packets.
+        # Each sample is 20 ms of SIM motion regardless of receive clustering.
         via = src or 'best_effort'
         if via != self._imu_via:
             self._imu_via = via
             self.get_logger().info(f'Receiving /imu/data via QoS={via}')
 
+        az = float(msg.linear_acceleration.z)
+        self._maybe_autodetect(az)
+
         sample = ImuSample(
             stamp_sec=self._integration_stamp_sec(msg.header.stamp),
             ax=float(msg.linear_acceleration.x),
             ay=float(msg.linear_acceleration.y),
-            az=float(msg.linear_acceleration.z),
+            az=az,
             gx=float(msg.angular_velocity.x),
             gy=float(msg.angular_velocity.y),
             gz=float(msg.angular_velocity.z),
@@ -273,6 +364,7 @@ class ImuOdometryNode(Node):
         self._process(sample, now)
 
     def _process(self, sample: ImuSample, stamp) -> None:
+        self._rate_count += 1
         state = self.reckoner.update(sample)
         self._msg_count += 1
         if state is None:
@@ -375,12 +467,9 @@ class ImuOdometryNode(Node):
                 f'pose=({state.x:.3f},{state.y:.3f}) dist={state.distance_m:.3f}m '
                 f'v=({state.vx:.3f},{state.vy:.3f}) '
                 f'dt={state.dt*1000:.1f}ms raw={state.dt_raw*1000:.1f}ms '
+                f'hz={self._last_hz:.1f} frame={self.reckoner.accel_frame} '
                 f'{"CLAMP " if state.dt_clamped else ""}'
                 f'a_raw=({state.ax_raw:.2f},{state.ay_raw:.2f}) '
-                f'a_xy=({state.ax_body:.2f},{state.ay_body:.2f}) '
-                f'bias=({bias_ax:.2f},{bias_ay:.2f}) '
-                f'zupt={"ON" if state.zupt_active else "off"} '
-                f'via={self._imu_via or "?"} '
                 f'path_pts={len(self._path_msg.poses)} integ={self.reckoner.samples_integrated}'
             )
 
