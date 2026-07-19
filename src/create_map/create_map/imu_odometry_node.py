@@ -9,13 +9,7 @@ import rclpy
 from geometry_msgs.msg import PoseStamped, Quaternion, TransformStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
-from rclpy.qos import (
-    DurabilityPolicy,
-    HistoryPolicy,
-    QoSProfile,
-    ReliabilityPolicy,
-    qos_profile_sensor_data,
-)
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Float32, Float64MultiArray
 from tf2_ros import TransformBroadcaster
@@ -26,15 +20,6 @@ from create_map.dead_reckon import ImuDeadReckoner, ImuSample
 def _qos_best_effort(depth: int = 50) -> QoSProfile:
     return QoSProfile(
         reliability=ReliabilityPolicy.BEST_EFFORT,
-        durability=DurabilityPolicy.VOLATILE,
-        history=HistoryPolicy.KEEP_LAST,
-        depth=depth,
-    )
-
-
-def _qos_reliable(depth: int = 50) -> QoSProfile:
-    return QoSProfile(
-        reliability=ReliabilityPolicy.RELIABLE,
         durability=DurabilityPolicy.VOLATILE,
         history=HistoryPolicy.KEEP_LAST,
         depth=depth,
@@ -114,22 +99,15 @@ class ImuOdometryNode(Node):
             )
             self.get_logger().info(f'Subscribing raw IMU on {raw_topic}')
         else:
-            # Dual QoS: micro-ROS agent QoS varies by build; incompatible QoS
-            # yields ZERO callbacks while agent still prints XRCE hex.
-            for label, qos in (
-                ('best_effort', _qos_best_effort()),
-                ('sensor_data', qos_profile_sensor_data),
-                ('reliable', _qos_reliable()),
-            ):
-                sub = self.create_subscription(
-                    Imu,
-                    self.imu_topic,
-                    lambda msg, src=label: self._on_imu(msg, src),
-                    qos,
+            # Must match xrce_imu_bridge / ESP32 BEST_EFFORT.
+            # A RELIABLE sub is INCOMPATIBLE and can prevent message delivery.
+            self._imu_subs.append(
+                self.create_subscription(
+                    Imu, self.imu_topic, self._on_imu, _qos_best_effort()
                 )
-                self._imu_subs.append(sub)
+            )
             self.get_logger().info(
-                f'Subscribing {self.imu_topic} with best_effort+sensor_data+reliable '
+                f'Subscribing {self.imu_topic} BEST_EFFORT '
                 f'(dt from {"receive time" if self.use_receive_time else "msg stamp"})'
             )
 
@@ -142,7 +120,7 @@ class ImuOdometryNode(Node):
         self.create_timer(2.0, self._discover_imu)
         self.get_logger().info(
             'create_map imu_odometry ready — /create_map/debug heartbeat on. '
-            'Waiting for /imu/data from micro-ROS agent.'
+            'Waiting for /imu/data from xrce_imu_bridge.'
         )
 
     def _discover_imu(self) -> None:
@@ -168,7 +146,9 @@ class ImuOdometryNode(Node):
             parts.append(f'{p.node_name}[{rel}/{dur}]')
         self.get_logger().warn(
             f'{self.imu_topic} has {len(pubs)} publisher(s): {", ".join(parts)} '
-            f'but imu_odometry got 0 msgs — QoS/discovery mismatch; dual-sub active'
+            f'but imu_odometry got 0 msgs — bridge not publishing yet '
+            f'(no ESP32 XRCE on :8888, or CDR parse miss). '
+            f'Expect xrce_imu_bridge log: Published /imu/data'
         )
 
     def _publish_debug(
@@ -251,14 +231,14 @@ class ImuOdometryNode(Node):
         return sec
 
     def _on_imu(self, msg: Imu, src: str = '') -> None:
-        # Deduplicate when multiple QoS subscriptions deliver the same sample
         now_ns = self.get_clock().now().nanoseconds
         if self._last_cb_ns and (now_ns - self._last_cb_ns) < 1_000_000:
             return
         self._last_cb_ns = now_ns
-        if src and src != self._imu_via:
-            self._imu_via = src
-            self.get_logger().info(f'Receiving /imu/data via QoS={src}')
+        via = src or 'best_effort'
+        if via != self._imu_via:
+            self._imu_via = via
+            self.get_logger().info(f'Receiving /imu/data via QoS={via}')
 
         sample = ImuSample(
             stamp_sec=self._integration_stamp_sec(msg.header.stamp),

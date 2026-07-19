@@ -67,7 +67,10 @@ class XrceImuBridge(Node):
         self.pub = self.create_publisher(Imu, imu_topic, IMU_QOS)
         self._client_addr = None
         self._pub_count = 0
+        self._udp_count = 0
+        self._parse_miss = 0
         self._last_log = 0.0
+        self._saw_client = False
 
         self.sock_ext = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_ext.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -80,6 +83,7 @@ class XrceImuBridge(Node):
         self.sock_agent.bind(('0.0.0.0', 0))
 
         self.create_timer(0.001, self._poll)  # 1 kHz poll is fine for 50 Hz IMU
+        self.create_timer(3.0, self._status)
         self.get_logger().info(
             f'XRCE IMU bridge: ESP32 → :{self.listen_port} → agent '
             f'{self.agent_host}:{self.agent_port}, publish {imu_topic}'
@@ -93,12 +97,33 @@ class XrceImuBridge(Node):
             elif sock is self.sock_agent:
                 self._from_agent()
 
+    def _status(self) -> None:
+        if self._pub_count > 0:
+            return
+        if self._udp_count == 0:
+            self.get_logger().warn(
+                f'Waiting for ESP32 XRCE UDP on :{self.listen_port} '
+                f'(MICROROS_AGENT_IP = this Orin Wi-Fi IP, port {self.listen_port})'
+            )
+            return
+        self.get_logger().warn(
+            f'ESP32 UDP ok ({self._udp_count} pkts from {self._client_addr}) '
+            f'but no Imu CDR yet (parse_miss={self._parse_miss}). '
+            'Check frame_id=imu_link in WRITE_DATA payloads.'
+        )
+
     def _from_esp32(self) -> None:
         try:
             data, addr = self.sock_ext.recvfrom(4096)
         except BlockingIOError:
             return
         self._client_addr = addr
+        self._udp_count += 1
+        if not self._saw_client:
+            self._saw_client = True
+            self.get_logger().info(
+                f'ESP32 XRCE peer {addr} first UDP {len(data)} bytes'
+            )
         try:
             self.sock_agent.sendto(data, (self.agent_host, self.agent_port))
         except OSError as exc:
@@ -106,13 +131,14 @@ class XrceImuBridge(Node):
 
         imu_parsed = try_parse_imu_cdr(data)
         if imu_parsed is None:
+            self._parse_miss += 1
             return
         # Prefer receive-time stamp for odometry dt stability
         imu = _to_imu_msg(imu_parsed, self.get_clock().now().to_msg())
         self.pub.publish(imu)
         self._pub_count += 1
         now = time.time()
-        if now - self._last_log >= 2.0:
+        if self._pub_count == 1 or now - self._last_log >= 2.0:
             self._last_log = now
             self.get_logger().info(
                 f'Published /imu/data x{self._pub_count} '
