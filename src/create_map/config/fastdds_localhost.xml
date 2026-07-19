@@ -1,21 +1,27 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<!-- Force same-host Fast DDS discovery between micro_ros_agent and create_map -->
+<!--
+  Force UDPv4 only (disable Shared Memory).
+
+  micro_ros_agent is often built against a different Fast-DDS / SHM ABI than
+  system ROS 2 Humble. Symptom: agent prints XRCE hex from ESP32, but
+  ros2 topic hz /imu/data and create_map see nothing.
+
+  Applied via FASTRTPS_DEFAULT_PROFILES_FILE + FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+-->
 <profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
-  <participant profile_name="participant_profile_create_map" is_default_profile="true">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>udp_transport</transport_id>
+      <type>UDPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+
+  <participant profile_name="petcam_udp_only" is_default_profile="true">
     <rtps>
-      <builtin>
-        <discovery_config>
-          <discoveryProtocol>SIMPLE</discoveryProtocol>
-          <ignoreParticipantFlags>FILTER_DIFFERENT_HOST</ignoreParticipantFlags>
-        </discovery_config>
-        <initialPeersList>
-          <locator>
-            <udpv4>
-              <address>127.0.0.1</address>
-            </udpv4>
-          </locator>
-        </initialPeersList>
-      </builtin>
+      <userTransports>
+        <transport_id>udp_transport</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
     </rtps>
   </participant>
 </profiles>

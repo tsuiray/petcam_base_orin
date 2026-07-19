@@ -34,14 +34,22 @@ def _build_agent(context, *args, **kwargs):
             f"Unsupported transport '{transport}'. Use serial, udp4, or tcp4."
         )
 
+    # Force UDPv4 DDS (no SHM): agent binary from microros_ws often cannot
+    # share SHM with system ROS 2 nodes — XRCE works, /imu/data invisible.
+    agent_env = {
+        "FASTDDS_BUILTIN_TRANSPORTS": "UDPv4",
+        "RMW_IMPLEMENTATION": "rmw_fastrtps_cpp",
+    }
+
     return [
-        LogInfo(msg=f"[petcam] Starting micro_ros_agent ({summary})"),
+        LogInfo(msg=f"[petcam] Starting micro_ros_agent ({summary}) [DDS=UDPv4]"),
         Node(
             package="micro_ros_agent",
             executable="micro_ros_agent",
             name="micro_ros_agent",
             output="screen",
             arguments=agent_args,
+            additional_env=agent_env,
         ),
     ]
 
