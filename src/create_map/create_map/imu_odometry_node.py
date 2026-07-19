@@ -155,11 +155,10 @@ class ImuOdometryNode(Node):
             return
         if not pubs:
             self.get_logger().warn(
-                f'No DDS publisher on {self.imu_topic}. '
-                'Agent XRCE can work while ROS graph still cannot see /imu/data. '
-                'Fix: ensure ONE agent, ROS_DISCOVERY_SERVER=127.0.0.1:11811, '
-                'FASTDDS_BUILTIN_TRANSPORTS=UDPv4. '
-                'Fallback: ./scripts/run_create_map_docker_agent.sh'
+                f'No DDS publisher on {self.imu_topic} yet. '
+                'If agent shows XRCE hex but this persists, agent/create_map '
+                'are on different FastDDS. Use: ./scripts/run_create_map.sh '
+                '(unified overlay). Check: ros2 topic list | grep imu'
             )
             return
         parts = []
