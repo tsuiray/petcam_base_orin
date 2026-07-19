@@ -26,18 +26,21 @@ ESP32  --XRCE/UDP-->  micro_ros_agent  --DDS discovery?-->  imu_odometry / ros2 
 appears in the same Fast DDS graph as create_map (not an ESP32 message bug).
 
 ### Fix in this repo
-1. Local **Fast DDS Discovery Server** (`127.0.0.1:11811`)
-2. `ROS_DISCOVERY_SERVER` + `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` (no SHM)
-3. Agent started via `ExecuteProcess` with the same env
-4. Fallback: **Docker agent** (ESP32 README style)
+1. Same FastDDS overlay for agent + create_map (`microros_ws` + `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`)
+2. `imu_odometry` subscribes **BEST_EFFORT only** (matches ESP32)
+3. Default: **micro_ros_agent on UDP :8888** (no XRCE UDP proxy — proxy broke ESP32 ping after handshake)
+4. Fallback: `use_xrce_bridge:=true` (threaded proxy + CDR→`/imu/data`) or Docker agent
 
 ```bash
 git pull && ./scripts/build_petcam_ws.sh
 
-# Preferred
+# Preferred — agent directly on :8888
 ./scripts/run_create_map.sh
 
-# If still "No DDS publisher on /imu/data":
+# If publisher visible but 0 msgs (DDS gap):
+./scripts/run_create_map.sh use_xrce_bridge:=true
+
+# Or Docker agent:
 ./scripts/run_create_map_docker_agent.sh
 ```
 

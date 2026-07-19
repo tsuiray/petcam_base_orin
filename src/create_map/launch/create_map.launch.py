@@ -1,7 +1,7 @@
-"""Launch create_map with XRCE UDP bridge (bypasses agent DDS discovery).
+"""Launch create_map: micro-ROS agent + imu_odometry + map_viewer.
 
-ESP32 → :8888 bridge → agent :8887
-              └─ publish /imu/data → imu_odometry → map_viewer
+Default: ESP32 → micro_ros_agent :8888 → DDS /imu/data → imu_odometry
+Optional: use_xrce_bridge:=true → ESP32→:8888 bridge→agent:8887 + CDR publish
 """
 
 import os
@@ -51,9 +51,14 @@ unset ROS_DISCOVERY_SERVER || true
 
 
 def _setup(context, *args, **kwargs):
-    public_port = LaunchConfiguration('port').perform(context)  # ESP32 targets this
+    public_port = LaunchConfiguration('port').perform(context)
     agent_port = LaunchConfiguration('agent_port').perform(context)
     verbose = LaunchConfiguration('verbose').perform(context)
+    use_bridge = LaunchConfiguration('use_xrce_bridge').perform(context).lower() in (
+        '1',
+        'true',
+        'yes',
+    )
     start_agent = LaunchConfiguration('start_microros_agent').perform(context).lower() in (
         '1',
         'true',
@@ -70,9 +75,10 @@ def _setup(context, *args, **kwargs):
         'yes',
     )
 
+    # Direct mode: agent binds the ESP32-facing port. Bridge mode: agent internal.
+    bind_port = agent_port if use_bridge else public_port
     actions = []
 
-    # 1) Agent on INTERNAL port (not seen by ESP32 directly)
     if start_agent:
         actions.append(
             ExecuteProcess(
@@ -81,15 +87,15 @@ def _setup(context, *args, **kwargs):
                     '-c',
                     _overlay(
                         f"""
-echo "[petcam] micro_ros_agent on INTERNAL udp4 :{agent_port}"
+echo "[petcam] micro_ros_agent udp4 :{bind_port}"
 if ! ros2 pkg prefix micro_ros_agent >/dev/null; then
   echo "ERROR: install micro_ros_agent first" >&2; exit 1
 fi
 if command -v fuser >/dev/null 2>&1; then
-  fuser -k {agent_port}/udp 2>/dev/null || true
   fuser -k {public_port}/udp 2>/dev/null || true
+  fuser -k {agent_port}/udp 2>/dev/null || true
 fi
-exec ros2 run micro_ros_agent micro_ros_agent udp4 --port {agent_port} -v{verbose}
+exec ros2 run micro_ros_agent micro_ros_agent udp4 --port {bind_port} -v{verbose}
 """
                     ),
                 ],
@@ -98,17 +104,17 @@ exec ros2 run micro_ros_agent micro_ros_agent udp4 --port {agent_port} -v{verbos
             )
         )
 
-    # 2) Bridge on PUBLIC :8888 + ROS /imu/data publisher
-    actions.append(
-        TimerAction(
-            period=1.0,
-            actions=[
-                ExecuteProcess(
-                    cmd=[
-                        'bash',
-                        '-c',
-                        _overlay(
-                            f"""
+    if use_bridge:
+        actions.append(
+            TimerAction(
+                period=1.0,
+                actions=[
+                    ExecuteProcess(
+                        cmd=[
+                            'bash',
+                            '-c',
+                            _overlay(
+                                f"""
 echo "[petcam] xrce_imu_bridge :{public_port} → agent :{agent_port}"
 exec ros2 run create_map xrce_imu_bridge --ros-args \
   -r __node:=xrce_imu_bridge \
@@ -116,16 +122,15 @@ exec ros2 run create_map xrce_imu_bridge --ros-args \
   -p agent_port:={agent_port} \
   -p imu_topic:=/imu/data
 """
-                        ),
-                    ],
-                    output='screen',
-                    name='xrce_imu_bridge',
-                )
-            ],
+                            ),
+                        ],
+                        output='screen',
+                        name='xrce_imu_bridge',
+                    )
+                ],
+            )
         )
-    )
 
-    # 3) Odometry + map after bridge is up
     node_actions = []
     if use_mock:
         node_actions.append(
@@ -146,7 +151,7 @@ exec ros2 run create_map xrce_imu_bridge --ros-args \
                 '-c',
                 _overlay(
                     """
-echo "[petcam] imu_odometry (subscribes /imu/data from xrce_imu_bridge)"
+echo "[petcam] imu_odometry (subscribes /imu/data BEST_EFFORT)"
 exec ros2 run create_map imu_odometry --ros-args -r __node:=imu_odometry
 """
                 ),
@@ -170,10 +175,12 @@ exec ros2 run create_map imu_odometry --ros-args -r __node:=imu_odometry
             )
         )
 
-    actions.append(TimerAction(period=2.0, actions=node_actions))
+    # Give agent (and optional bridge) a moment before subscribers start.
+    delay = 2.0 if use_bridge else 1.5
+    actions.append(TimerAction(period=delay, actions=node_actions))
     actions.append(
         TimerAction(
-            period=3.0,
+            period=delay + 1.0,
             actions=[
                 ExecuteProcess(
                     cmd=[
@@ -197,11 +204,12 @@ def generate_launch_description():
         [
             LogInfo(
                 msg=(
-                    '[petcam] XRCE IMU bridge mode: ESP32→:8888→agent:8887 + /imu/data '
-                    '(bypasses agent DDS discovery)'
+                    '[petcam] create_map: agent on :8888 (default). '
+                    'Optional: use_xrce_bridge:=true'
                 )
             ),
             DeclareLaunchArgument('use_mock_imu', default_value='false'),
+            DeclareLaunchArgument('use_xrce_bridge', default_value='false'),
             DeclareLaunchArgument('start_microros_agent', default_value='true'),
             DeclareLaunchArgument('port', default_value='8888'),
             DeclareLaunchArgument('agent_port', default_value='8887'),

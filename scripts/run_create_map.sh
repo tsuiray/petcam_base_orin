@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Launch create_map with XRCE→ROS IMU bridge (works even when agent DDS is invisible).
+# Launch create_map: micro-ROS agent on :8888 + imu_odometry + map viewer.
+# Optional: ./scripts/run_create_map.sh use_xrce_bridge:=true
 set -e
 
 ROS_DISTRO="${ROS_DISTRO:-humble}"
@@ -36,9 +37,10 @@ ros2 daemon stop >/dev/null 2>&1 || true
 command -v fuser >/dev/null && fuser -k 8888/udp 2>/dev/null || true
 command -v fuser >/dev/null && fuser -k 8887/udp 2>/dev/null || true
 
-echo "==> Orin Wi-Fi IP (ESP32 MICROROS_AGENT_IP / still port 8888):"
+echo "==> Orin Wi-Fi IP (ESP32 MICROROS_AGENT_IP / port 8888):"
 ip -4 addr show scope global | sed -n 's/.*inet \([0-9.]*\).*/  \1/p' || true
-echo "==> Bridge mode: ESP32 → :8888 → agent :8887 + publish /imu/data"
-echo "==> Expect log: Published /imu/data ... then Receiving /imu/data via QoS=..."
+echo "==> Mode: micro_ros_agent udp4 :8888 → /imu/data → imu_odometry (BEST_EFFORT)"
+echo "==> Expect: agent 'datawriter created' then imu_odometry 'Receiving /imu/data'"
+echo "==> Fallback if DDS still silent: ./scripts/run_create_map.sh use_xrce_bridge:=true"
 
 exec ros2 launch create_map create_map.launch.py verbose:=4 "$@"

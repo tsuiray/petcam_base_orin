@@ -2,7 +2,7 @@
 
 import struct
 
-from create_map.xrce_imu_cdr import try_parse_imu_cdr
+from create_map.xrce_imu_cdr import try_parse_imu_cdr, xrce_summary
 
 
 def _build_fake_xrce_imu(ax=0.6, ay=0.0, az=9.80665) -> bytes:
@@ -30,3 +30,10 @@ def test_parse_imu_from_xrce_payload():
 
 def test_parse_rejects_unrelated_udp():
     assert try_parse_imu_cdr(b'hello world') is None
+
+
+def test_xrce_summary_includes_length():
+    raw = _build_fake_xrce_imu()
+    s = xrce_summary(raw)
+    assert 'len=' in s
+    assert 'frame=imu_link' in s

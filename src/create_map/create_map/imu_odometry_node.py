@@ -120,7 +120,7 @@ class ImuOdometryNode(Node):
         self.create_timer(2.0, self._discover_imu)
         self.get_logger().info(
             'create_map imu_odometry ready — /create_map/debug heartbeat on. '
-            'Waiting for /imu/data from xrce_imu_bridge.'
+            'Waiting for /imu/data (micro_ros_agent or xrce_imu_bridge).'
         )
 
     def _discover_imu(self) -> None:
@@ -146,9 +146,10 @@ class ImuOdometryNode(Node):
             parts.append(f'{p.node_name}[{rel}/{dur}]')
         self.get_logger().warn(
             f'{self.imu_topic} has {len(pubs)} publisher(s): {", ".join(parts)} '
-            f'but imu_odometry got 0 msgs — bridge not publishing yet '
-            f'(no ESP32 XRCE on :8888, or CDR parse miss). '
-            f'Expect xrce_imu_bridge log: Published /imu/data'
+            f'but imu_odometry got 0 msgs. If only handshake reached the agent, '
+            f'ESP32 may have lost ping — use agent on :8888 (default). '
+            f'If agent shows XRCE DATA hex but still 0 msgs: '
+            f'./scripts/run_create_map.sh use_xrce_bridge:=true'
         )
 
     def _publish_debug(
