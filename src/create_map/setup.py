@@ -27,6 +27,7 @@ setup(
             'imu_odometry = create_map.imu_odometry_node:main',
             'map_viewer = create_map.map_viewer_node:main',
             'mock_imu = create_map.mock_imu_publisher:main',
+            'xrce_imu_bridge = create_map.xrce_imu_bridge:main',
         ],
     },
 )
