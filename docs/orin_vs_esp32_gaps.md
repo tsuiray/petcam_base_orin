@@ -28,20 +28,13 @@ appears in the same Fast DDS graph as create_map (not an ESP32 message bug).
 ### Fix in this repo
 1. Same FastDDS overlay for agent + create_map (`microros_ws` + `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`)
 2. `imu_odometry` subscribes **BEST_EFFORT only** (matches ESP32)
-3. Default: **micro_ros_agent on UDP :8888** (no XRCE UDP proxy — proxy broke ESP32 ping after handshake)
-4. Fallback: `use_xrce_bridge:=true` (threaded proxy + CDR→`/imu/data`) or Docker agent
+3. Default: **micro_ros_agent `tcp4` :8888** (ESP32 `MICROROS_TRANSPORT_TCP`)
+4. ESP32 TCP patch: [`docs/esp32_tcp_port/`](esp32_tcp_port/README.md) (hardening-26d4 is UDP-only today)
 
 ```bash
 git pull && ./scripts/build_petcam_ws.sh
-
-# Preferred — agent directly on :8888
+# Flash ESP32 with TCP transport (see docs/esp32_tcp_port/)
 ./scripts/run_create_map.sh
-
-# If publisher visible but 0 msgs (DDS gap):
-./scripts/run_create_map.sh use_xrce_bridge:=true
-
-# Or Docker agent:
-./scripts/run_create_map_docker_agent.sh
 ```
 
 ## Verify

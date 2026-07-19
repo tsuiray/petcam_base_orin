@@ -1,7 +1,7 @@
-"""Launch create_map: ESP32 IMU → path map.
+"""Launch create_map: ESP32 IMU → path map over micro-ROS TCP.
 
-Default: ESP32 → :8888 bridge → agent :8887 + publish /imu/data
-(bypasses flaky agent DDS discovery on Orin).
+Default: ESP32 TCP → micro_ros_agent tcp4 :8888 → /imu/data → imu_odometry
+(No UDP XRCE bridge — incompatible with TCP.)
 """
 
 import os
@@ -54,6 +54,7 @@ def _setup(context, *args, **kwargs):
     public_port = LaunchConfiguration('port').perform(context)
     agent_port = LaunchConfiguration('agent_port').perform(context)
     verbose = LaunchConfiguration('verbose').perform(context)
+    transport = LaunchConfiguration('transport').perform(context).strip().lower() or 'tcp4'
     imu_mode = LaunchConfiguration('imu_mode').perform(context) or 'sim'
     use_bridge = LaunchConfiguration('use_xrce_bridge').perform(context).lower() in (
         '1',
@@ -76,7 +77,17 @@ def _setup(context, *args, **kwargs):
         'yes',
     )
 
-    # SIM defaults (ESP32 main imu_sim); REAL overrides below.
+    if transport in ('tcp', 'tcp4'):
+        transport = 'tcp4'
+    elif transport in ('udp', 'udp4'):
+        transport = 'udp4'
+    else:
+        transport = 'tcp4'
+
+    # UDP XRCE byte-proxy cannot front a TCP agent.
+    if transport == 'tcp4' and use_bridge:
+        use_bridge = False
+
     if imu_mode.lower() in ('real', 'body', 'mpu', 'mpu6050'):
         accel_frame = 'body'
         use_fixed_dt = 'false'
@@ -91,6 +102,7 @@ def _setup(context, *args, **kwargs):
     actions = []
 
     if start_agent:
+        kill_proto = 'tcp' if transport == 'tcp4' else 'udp'
         actions.append(
             ExecuteProcess(
                 cmd=[
@@ -98,15 +110,16 @@ def _setup(context, *args, **kwargs):
                     '-c',
                     _overlay(
                         f"""
-echo "[petcam] micro_ros_agent udp4 :{bind_port}"
+echo "[petcam] micro_ros_agent {transport} :{bind_port}"
 if ! ros2 pkg prefix micro_ros_agent >/dev/null; then
   echo "ERROR: install micro_ros_agent first" >&2; exit 1
 fi
 if command -v fuser >/dev/null 2>&1; then
-  fuser -k {public_port}/udp 2>/dev/null || true
+  fuser -k {public_port}/{kill_proto} 2>/dev/null || true
   fuser -k {agent_port}/udp 2>/dev/null || true
+  fuser -k {agent_port}/tcp 2>/dev/null || true
 fi
-exec ros2 run micro_ros_agent micro_ros_agent udp4 --port {bind_port} -v{verbose}
+exec ros2 run micro_ros_agent micro_ros_agent {transport} --port {bind_port} -v{verbose}
 """
                     ),
                 ],
@@ -156,7 +169,6 @@ exec ros2 run create_map xrce_imu_bridge --ros-args \
             )
         )
 
-    # IMPORTANT: f-string so imu_mode is substituted (was a bug: literal {{imu_mode}}).
     node_actions.append(
         ExecuteProcess(
             cmd=[
@@ -164,7 +176,7 @@ exec ros2 run create_map xrce_imu_bridge --ros-args \
                 '-c',
                 _overlay(
                     f"""
-echo "[petcam] imu_odometry mode={imu_mode} accel_frame={accel_frame} fixed_dt={use_fixed_dt}"
+echo "[petcam] imu_odometry mode={imu_mode} accel_frame={accel_frame} fixed_dt={use_fixed_dt} agent={transport}"
 exec ros2 run create_map imu_odometry --ros-args \
   -r __node:=imu_odometry \
   -p imu_mode:={imu_mode} \
@@ -205,7 +217,8 @@ exec ros2 run create_map imu_odometry --ros-args \
                         'bash',
                         '-c',
                         f"""
-echo "[petcam] port check:"
+echo "[petcam] port check ({transport}):"
+ss -tlnp 2>/dev/null | grep -E ":{public_port}[[:space:]]" || true
 ss -ulnp 2>/dev/null | grep -E ":({public_port}|{agent_port})[[:space:]]" || true
 """,
                     ],
@@ -214,7 +227,6 @@ ss -ulnp 2>/dev/null | grep -E ":({public_port}|{agent_port})[[:space:]]" || tru
             ],
         )
     )
-    # After a few seconds, print whether /imu/data is alive (helps debug "ESP32 Serial OK, map empty").
     actions.append(
         TimerAction(
             period=delay + 5.0,
@@ -227,7 +239,7 @@ ss -ulnp 2>/dev/null | grep -E ":({public_port}|{agent_port})[[:space:]]" || tru
                             """
 echo "[petcam] /imu/data check (5s):"
 ros2 topic info /imu/data -v 2>/dev/null | head -40 || true
-timeout 3 ros2 topic hz /imu/data 2>/dev/null || echo "[petcam] WARN: no /imu/data hz — ESP32 Serial ≠ Orin ROS graph"
+timeout 3 ros2 topic hz /imu/data 2>/dev/null || echo "[petcam] WARN: no /imu/data hz — check ESP32 MICROROS_TRANSPORT matches agent tcp4/udp4"
 """
                         ),
                     ],
@@ -244,13 +256,18 @@ def generate_launch_description():
         [
             LogInfo(
                 msg=(
-                    '[petcam] create_map default: XRCE bridge :8888→:8887 + /imu/data '
-                    '(imu_mode:=sim). Disable bridge: use_xrce_bridge:=false'
+                    '[petcam] create_map default: micro_ros_agent tcp4 :8888 '
+                    '(ESP32 MICROROS_TRANSPORT_TCP). UDP: transport:=udp4'
                 )
             ),
             DeclareLaunchArgument('use_mock_imu', default_value='false'),
-            # Bridge publishes /imu/data locally — needed when agent DDS is invisible.
-            DeclareLaunchArgument('use_xrce_bridge', default_value='true'),
+            DeclareLaunchArgument(
+                'transport',
+                default_value='tcp4',
+                description='micro_ros_agent transport: tcp4 (default) | udp4',
+            ),
+            # Bridge is UDP-only; ignored when transport:=tcp4
+            DeclareLaunchArgument('use_xrce_bridge', default_value='false'),
             DeclareLaunchArgument(
                 'imu_mode',
                 default_value='sim',

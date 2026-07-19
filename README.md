@@ -17,7 +17,8 @@ Later slices on this Orin repo: Rockchip 1126 RTSP ingest, perception, teleop UI
 
 - JetPack 6.x / **Ubuntu 22.04** recommended for native ROS 2 Humble
 - ESP32-S3 powered and running your micro-ROS firmware over **UDP**
-- ESP32 must target the Orin LAN IP; agent default listen port is **8888**
+- ESP32 must target the Orin LAN IP; agent default is **TCP port 8888** (`tcp4`)
+- ESP32 firmware: `MICROROS_TRANSPORT_TCP` (branch `cursor/microros-tcp-1706`)
 - Serial USB remains available as a fallback (`transport:=serial`)
 
 JetPack 5 / Ubuntu 20.04: use the Docker path under `docker/`, or upgrade to JP6.
@@ -45,16 +46,20 @@ chmod +x scripts/*.sh src/petcam_bringup/scripts/*.sh docker/entrypoint_microros
 
 Open a **new terminal** (or `source ~/.bashrc`) so all overlays are loaded.
 
-## Connect the ESP32-S3 (UDP)
+## Connect the ESP32-S3 (TCP)
 
-ESP32 firmware uses UDP XRCE-DDS. Point the client at the Orin IP and port `8888`.
+ESP32 firmware uses **TCP** XRCE-DDS by default (`MICROROS_TRANSPORT_TCP`).
+Point the client at the Orin IP and port `8888`.
 
 ```bash
-# default is already udp4 :8888
+# default is tcp4 :8888
 ./scripts/run_microros_agent.sh
 
+# or full create_map stack:
+./scripts/run_create_map.sh
+
 # or explicitly:
-ros2 launch petcam_bringup microros_agent.launch.py transport:=udp4 port:=8888
+ros2 launch petcam_bringup microros_agent.launch.py transport:=tcp4 port:=8888
 ```
 
 Optional serial USB fallback:
@@ -140,9 +145,9 @@ The agent transport **must** match the client XRCE config on the ESP32-S3:
 
 | ESP32 client | Orin agent launch |
 |--------------|-------------------|
-| UDP port 8888 (default) | `transport:=udp4 port:=8888` |
+| **TCP port 8888 (default)** | `transport:=tcp4 port:=8888` |
+| UDP port 8888 | `transport:=udp4 port:=8888` |
 | Serial USB, 115200 | `transport:=serial serial_dev:=/dev/ttyACM0 serial_baud:=115200` |
-| TCP port 8888 | `transport:=tcp4 port:=8888` |
 
 Also keep `ROS_DOMAIN_ID` consistent (default `0`).
 
@@ -151,9 +156,10 @@ If your ESP32 uses a non-default device, baud, or port, pass those launch args o
 ### ESP32 IMU topic for create_map
 
 Matched to firmware [`petcam_esp32_s3`](https://github.com/tsuiray/petcam_esp32_s3)
-branch `cursor/esp32-arduino-hardening-26d4`:
+branch **`cursor/microros-tcp-1706`** (TCP + SIM; from `main`):
 
 - Topic **`/imu/data`** (`sensor_msgs/Imu`, BEST_EFFORT, 50 Hz)
-- Accel **m/s²**, gyro **rad/s**, agent **UDP 8888**
+- Accel **m/s²**, gyro **rad/s**, agent **TCP 8888**
+- Older `cursor/esp32-arduino-hardening-26d4` is UDP-only — see contract for TCP port steps
 
 See [`docs/esp32_imu_contract.md`](docs/esp32_imu_contract.md).

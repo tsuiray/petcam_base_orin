@@ -1,4 +1,4 @@
-"""Launch micro-ROS Agent — must bind XRCE UDP :8888 for ESP32."""
+"""Launch micro-ROS Agent — default TCP :8888 (ESP32 MICROROS_TRANSPORT_TCP)."""
 
 import os
 
@@ -57,6 +57,7 @@ if ! ros2 pkg prefix micro_ros_agent; then
   exit 1
 fi
 if command -v fuser >/dev/null 2>&1; then
+  fuser -k {port}/tcp 2>/dev/null || true
   fuser -k {port}/udp 2>/dev/null || true
 fi
 echo "[petcam] exec: ros2 run micro_ros_agent micro_ros_agent {agent_cli}"
@@ -79,8 +80,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "transport",
-                default_value="udp4",
-                description="XRCE transport: udp4 | serial | tcp4",
+                default_value="tcp4",
+                description="XRCE transport: tcp4 (default) | udp4 | serial",
             ),
             DeclareLaunchArgument(
                 "serial_dev",
@@ -95,7 +96,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "port",
                 default_value="8888",
-                description="UDP XRCE port (ESP32 MICROROS_AGENT_PORT)",
+                description="XRCE port (ESP32 MICROROS_AGENT_PORT)",
             ),
             DeclareLaunchArgument(
                 "verbose",

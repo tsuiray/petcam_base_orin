@@ -34,7 +34,7 @@ Aligned with firmware branch **`main`**
 | Rate | **50 Hz** (20 ms/sample) |
 | SIM accel | **world-frame** m/s², `az=0` |
 | REAL accel | body-frame m/s² + gravity |
-| Agent | UDP 8888 |
+| Agent | **TCP 8888** (`tcp4`; ESP32 `MICROROS_TRANSPORT_TCP`) |
 
 Full contract: [`docs/esp32_imu_contract.md`](esp32_imu_contract.md)
 
@@ -46,7 +46,7 @@ Full contract: [`docs/esp32_imu_contract.md`](esp32_imu_contract.md)
 # log should show: /imu/data rate: ~50 Hz
 ```
 
-Point ESP32 agent IP at Orin, port **8888**. L-path (~500 sq ft) should redraw on itself each lap.
+Point ESP32 agent IP at Orin, port **8888**, transport **TCP** (firmware branch `cursor/microros-tcp-1706`). L-path (~500 sq ft) should redraw with low packet loss.
 
 ## REAL MPU6050
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch create_map with XRCE bridge (ESP32 → :8888 → agent :8887 + /imu/data).
+# Launch create_map with micro_ros_agent TCP :8888 (matches ESP32 MICROROS_TRANSPORT_TCP).
 set -e
 
 ROS_DISTRO="${ROS_DISTRO:-humble}"
@@ -33,13 +33,15 @@ export MICROROS_WS
 unset ROS_DISCOVERY_SERVER || true
 
 ros2 daemon stop >/dev/null 2>&1 || true
+command -v fuser >/dev/null && fuser -k 8888/tcp 2>/dev/null || true
 command -v fuser >/dev/null && fuser -k 8888/udp 2>/dev/null || true
 command -v fuser >/dev/null && fuser -k 8887/udp 2>/dev/null || true
 
 echo "==> Orin Wi-Fi IP (ESP32 MICROROS_AGENT_IP / port 8888):"
 ip -4 addr show scope global | sed -n 's/.*inet \([0-9.]*\).*/  \1/p' || true
-echo "==> Bridge: ESP32 → :8888 → agent :8887 + publish /imu/data"
+echo "==> Agent: micro_ros_agent tcp4 :8888 (ESP32 must use MICROROS_TRANSPORT_TCP)"
 echo "==> imu_mode:=sim (world-frame, fixed 20 ms). REAL: imu_mode:=real"
-echo "==> Expect: 'Published /imu/data' then '/imu/data rate: ~50 Hz' + L-path"
+echo "==> UDP fallback: ./scripts/run_create_map.sh transport:=udp4"
+echo "==> Expect: create_map RX ~50 Hz, low loss%, L-path on map"
 
-exec ros2 launch create_map create_map.launch.py verbose:=4 use_xrce_bridge:=true "$@"
+exec ros2 launch create_map create_map.launch.py verbose:=4 transport:=tcp4 "$@"

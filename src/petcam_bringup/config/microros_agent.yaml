@@ -6,7 +6,7 @@
 
 /**:
   ros__parameters:
-    transport: udp4            # udp4 | serial | tcp4
+    transport: tcp4            # tcp4 (default) | udp4 | serial
     serial_dev: /dev/ttyACM0   # or /dev/petcam_sensing after udev rules
     serial_baud: 115200
     udp_port: 8888

@@ -2,17 +2,58 @@
 
 Source firmware:
 - Repo: https://github.com/tsuiray/petcam_esp32_s3
-- Branch: **`main`** (SIM L-home) — older hardening branch has no `imu_sim.*`
-- Sketch: `esp32.ino` + `imu_sim.cpp` (SIM) or `mpu6050.cpp` (REAL)
+- Preferred base: **`main`** (has SIM L-home) + TCP files from this Orin repo
+- Older: `cursor/esp32-arduino-hardening-26d4` — **UDP only**, no SIM
+- Apply-ready TCP patch (headers + steps): [`docs/esp32_tcp_port/`](esp32_tcp_port/README.md)
 
-## Transport
+## Transport (default: TCP)
 
 | Item | Value |
 |------|-------|
 | Link | Wi‑Fi STA on same home AP as Orin |
-| micro-ROS agent | Orin UDP **8888** |
+| micro-ROS agent | Orin **`tcp4`** port **8888** |
+| ESP32 | `MICROROS_TRANSPORT_TCP` in `board_config.h` |
 | Agent IP | Orin LAN IP (`MICROROS_AGENT_IP`) |
 | Rate | **50 Hz** — each sample = **20 ms** of motion |
+
+```bash
+# Orin
+./scripts/run_create_map.sh          # tcp4 :8888
+# ESP32 Serial should say: micro-ROS TCP transport -> <orin-ip>:8888
+```
+
+UDP fallback (both sides):
+```cpp
+// ESP32 board_config.h
+#define MICROROS_TRANSPORT MICROROS_TRANSPORT_UDP
+```
+```bash
+./scripts/run_create_map.sh transport:=udp4
+```
+
+## What `cursor/esp32-arduino-hardening-26d4` needs for TCP
+
+That branch today:
+
+| Present | Missing for TCP / SIM |
+|---------|------------------------|
+| `wifi_transport.cpp` (UDP only) | `wifi_tcp_transport.h` / `.cpp` |
+| `set_microros` / UDP bind | `MICROROS_TRANSPORT` switch in `board_config.h` + `esp32.ino` |
+| REAL MPU6050 path | `imu_sim.*` (only on `main`) |
+
+**Minimum port** from `cursor/microros-tcp-1706` / `main`:
+
+1. Add `wifi_tcp_transport.h` + `wifi_tcp_transport.cpp`
+2. In `board_config.h`:
+   ```cpp
+   #define MICROROS_TRANSPORT_UDP 0
+   #define MICROROS_TRANSPORT_TCP 1
+   #define MICROROS_TRANSPORT MICROROS_TRANSPORT_TCP
+   ```
+3. In `esp32.ino` `bind_microros_wifi_transport()`: call `arduino_wifi_tcp_transport_*` when TCP
+4. Flash ESP32, run Orin `transport:=tcp4`
+
+Prefer flashing **`cursor/microros-tcp-1706`** (TCP + SIM L-home) instead of porting by hand.
 
 ## ROS interface
 
@@ -21,72 +62,21 @@ Source firmware:
 | Node | `petcam_esp32_imu` |
 | Topic | `/imu/data` |
 | Type | `sensor_msgs/msg/Imu` |
-| QoS | **BEST_EFFORT** |
+| QoS | **BEST_EFFORT** (TCP still retransmits XRCE bytes) |
 
-## SIM mode (`IMU_DATA_MODE_SIM`) — default on ESP32 `main`
+## SIM mode (`IMU_DATA_MODE_SIM`)
 
-Publishes a **closed L-home** (~490 sq ft / 45.5 m²):
+Closed L-home (~490 sq ft). World-frame `ax/ay`, `az=0`, fixed `dt=0.02` on Orin.
 
-```
-(0,7)----(4.5,7)
-  |            |
-  |      (4.5,4)----(8,4)
-  |                   |
-(0,0)----------------(8,0)
-```
+## Reliable delivery
 
-| Field | SIM meaning |
-|-------|-------------|
-| `linear_acceleration.x/y` | **World-frame** m/s² (already in map axes) |
-| `linear_acceleration.z` | **0** (no gravity) |
-| `angular_velocity.z` | Yaw rate during corner turns |
-| Intent | Naive Euler `v+=a*dt; x+=v*dt` with **fixed dt=0.02** redraws the same polygon each lap |
-
-Orin create_map must use `imu_mode:=sim` (default):
-- `accel_frame=world` (do **not** rotate by yaw)
-- `use_fixed_dt=true` (ignore Wi‑Fi receive jitter)
-- no 1 s bias calib during motion
-- expect **~50 messages/second**
-
-## REAL mode (`IMU_DATA_MODE_REAL`)
-
-| Field | Unit |
-|-------|------|
-| accel | body-frame m/s² (±2g) |
-| gyro | rad/s (±250 dps) |
-| `az` | ≈ +g at rest |
-
-```bash
-./scripts/run_create_map.sh imu_mode:=real
-```
+TCP reduces lost samples vs UDP. ROS 2 “secure DDS” ≠ loss-free.  
+See earlier table: TCP / RELIABLE vs BEST_EFFORT UDP.
 
 ## Verify
 
 ```bash
 ./scripts/run_create_map.sh
-# look for: create_map RX: ~50/50 Hz loss~0% ...
-# L-path should look like the SIM L after the first settle
+# create_map RX: ~50/50 Hz loss~0% ...
+# ss -tlnp | grep 8888   → micro_ros_agent listening TCP
 ```
-
-## Reliable delivery {#reliable-delivery}
-
-Today the link is **Wi‑Fi UDP + micro-ROS BEST_EFFORT**. UDP does **not** retransmit.
-If a sample is lost, create_map never sees that 20 ms of motion → L-laps will not
-overlap 100%. That is expected, not a map bug.
-
-| Approach | Retransmit? | Notes |
-|----------|-------------|--------|
-| **UDP + BEST_EFFORT** (current) | No | Light on ESP32; OK for real IMU; SIM overlap suffers |
-| **UDP + RELIABLE** (ROS 2 / XRCE reliable QoS) | Yes (RTPS repair) | Change ESP32 to `rclc_publisher_init_default` (not best_effort). Heavier; may still drop under bad Wi‑Fi |
-| **TCP** (`micro_ros_agent tcp4`) | Yes (TCP) | Orin already supports `transport:=tcp4`. ESP32 must use TCP Wi‑Fi transport (firmware change). More latency, usually fewer gaps |
-| **Sequence number in msg** | Detect only | Put sample index in an unused field; Orin logs gaps (cannot invent lost accel) |
-
-ROS 2 does **not** have a special “secure UDP that never loses packets.”  
-“Secure” usually means **DDS-Security** (auth/encryption), not loss-free delivery.  
-Loss-free ≈ **RELIABLE QoS** and/or **TCP**, with enough bandwidth and buffer.
-
-### Practical recommendation
-
-- **SIM demo / closed laps:** switch ESP32 publisher to **RELIABLE**, or use **TCP** agent+client.
-- **Real robot IMU at 50 Hz:** keep **BEST_EFFORT UDP**; accept occasional drops; use ZUPT / later camera SLAM for map quality.
-- Orin already logs `loss~N%` on the `create_map RX:` line so you can see Wi‑Fi quality.
