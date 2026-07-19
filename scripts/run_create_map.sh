@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Launch create_map: micro-ROS agent on :8888 + imu_odometry + map viewer.
-# Optional: ./scripts/run_create_map.sh use_xrce_bridge:=true
+# Launch create_map with XRCE bridge (ESP32 → :8888 → agent :8887 + /imu/data).
 set -e
 
 ROS_DISTRO="${ROS_DISTRO:-humble}"
@@ -39,9 +38,8 @@ command -v fuser >/dev/null && fuser -k 8887/udp 2>/dev/null || true
 
 echo "==> Orin Wi-Fi IP (ESP32 MICROROS_AGENT_IP / port 8888):"
 ip -4 addr show scope global | sed -n 's/.*inet \([0-9.]*\).*/  \1/p' || true
-echo "==> Mode: micro_ros_agent udp4 :8888 → /imu/data → imu_odometry"
-echo "==> Default imu_mode:=sim (ESP32 L-home: world-frame accel, fixed 20 ms/sample, ~50 Hz)"
-echo "==> REAL MPU6050: ./scripts/run_create_map.sh imu_mode:=real"
-echo "==> Expect log: '/imu/data rate: ~50 Hz' and L-path that overlaps each lap"
+echo "==> Bridge: ESP32 → :8888 → agent :8887 + publish /imu/data"
+echo "==> imu_mode:=sim (world-frame, fixed 20 ms). REAL: imu_mode:=real"
+echo "==> Expect: 'Published /imu/data' then '/imu/data rate: ~50 Hz' + L-path"
 
-exec ros2 launch create_map create_map.launch.py verbose:=4 "$@"
+exec ros2 launch create_map create_map.launch.py verbose:=4 use_xrce_bridge:=true "$@"

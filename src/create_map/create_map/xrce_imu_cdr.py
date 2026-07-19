@@ -92,9 +92,9 @@ def _parse_imu_at_frame(payload: bytes, idx: int, frame_id: str) -> Optional[Par
     except struct.error:
         return None
 
-    # Sanity: accel magnitude roughly in [0.5, 30] m/s^2 for a phone/robot IMU
+    # SIM settle/turns have a≈0; REAL rest has |a|≈g. Only reject absurd values.
     amag = (ax * ax + ay * ay + az * az) ** 0.5
-    if amag < 0.05 or amag > 80.0:
+    if amag > 80.0:
         return None
 
     return ParsedImu(
