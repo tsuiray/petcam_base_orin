@@ -4,12 +4,16 @@
 
 `micro_ros_agent` is an XRCE-DDS Agent. The ESP32 micro-ROS client opens a session to it; once established, ESP32 pubs/subs appear as normal ROS 2 topics on the Orin DDS graph.
 
-## Typical ESP32-S3 serial session
+## UDP session (ESP32-S3 default)
 
 ```bash
-# Orin
-ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0 -b 115200 -v6
+# Orin (listen)
+ros2 run micro_ros_agent micro_ros_agent udp4 --port 8888 -v6
+# or:
+./scripts/run_microros_agent.sh
 ```
+
+ESP32 must target the Orin LAN IP, same port (`8888`), same XRCE key/domain as configured in firmware.
 
 Success looks like agent log lines mentioning a new client / session (verbosity dependent). Then:
 
@@ -18,14 +22,12 @@ ros2 topic list
 ros2 topic echo /<your_esp32_topic>
 ```
 
-## UDP session
+## Serial fallback
 
 ```bash
-# Orin (listen)
-ros2 run micro_ros_agent micro_ros_agent udp4 --port 8888 -v6
+# Orin
+ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0 -b 115200 -v6
 ```
-
-ESP32 must target the Orin LAN IP, same port, same XRCE key/domain as configured in firmware.
 
 ## Common failures
 

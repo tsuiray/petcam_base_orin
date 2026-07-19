@@ -37,4 +37,5 @@ COPY docker/entrypoint_microros.sh /entrypoint_microros.sh
 RUN chmod +x /entrypoint_microros.sh
 
 ENTRYPOINT ["/entrypoint_microros.sh"]
+# ESP32-S3 sensing unit uses UDP XRCE-DDS
 CMD ["udp4", "--port", "8888", "-v6"]

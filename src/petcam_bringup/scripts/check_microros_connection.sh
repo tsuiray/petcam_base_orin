@@ -37,6 +37,7 @@ ros2 topic list || true
 
 echo ""
 echo "If the agent is running but no ESP32 topics appear:"
-echo "  1) Confirm ESP32 transport matches agent (serial device/baud or UDP port)."
+echo "  1) ESP32 uses UDP — confirm Orin agent is udp4 on the same port (default 8888)"
+echo "     and ESP32 points at this Orin IP."
 echo "  2) Restart agent with -v6 and watch for 'session established'."
 echo "  3) Same ROS_DOMAIN_ID on Orin and client (default 0)."

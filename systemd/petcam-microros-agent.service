@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=REPLACE_ME
 Environment=ROS_DISTRO=humble
-Environment=TRANSPORT=serial
+Environment=TRANSPORT=udp4
 Environment=SERIAL_DEV=/dev/ttyACM0
 Environment=SERIAL_BAUD=115200
 Environment=PORT=8888

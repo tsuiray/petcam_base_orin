@@ -31,13 +31,14 @@ else
   exit 1
 fi
 
-TRANSPORT="${TRANSPORT:-serial}"
+# ESP32-S3 sensing unit uses UDP by default
+TRANSPORT="${TRANSPORT:-udp4}"
 SERIAL_DEV="${SERIAL_DEV:-/dev/ttyACM0}"
 SERIAL_BAUD="${SERIAL_BAUD:-115200}"
 PORT="${PORT:-8888}"
 VERBOSE="${VERBOSE:-6}"
 
-# Prefer stable udev symlink when present
+# Prefer stable udev symlink when present (serial fallback only)
 if [[ "${TRANSPORT}" == "serial" && -e /dev/petcam_sensing ]]; then
   SERIAL_DEV="/dev/petcam_sensing"
 fi

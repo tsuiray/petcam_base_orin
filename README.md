@@ -16,10 +16,9 @@ Later slices on this Orin repo: Rockchip 1126 RTSP ingest, perception, teleop UI
 ## Prerequisites (on Orin)
 
 - JetPack 6.x / **Ubuntu 22.04** recommended for native ROS 2 Humble
-- ESP32-S3 powered and running your micro-ROS firmware
-- Know the ESP32 transport you configured:
-  - **serial** USB CDC (common): `/dev/ttyACM0`, baud `115200`
-  - **udp4** WiFi: Orin listens on port `8888` (ESP32 points at Orin IP)
+- ESP32-S3 powered and running your micro-ROS firmware over **UDP**
+- ESP32 must target the Orin LAN IP; agent default listen port is **8888**
+- Serial USB remains available as a fallback (`transport:=serial`)
 
 JetPack 5 / Ubuntu 20.04: use the Docker path under `docker/`, or upgrade to JP6.
 
@@ -46,34 +45,22 @@ chmod +x scripts/*.sh src/petcam_bringup/scripts/*.sh docker/entrypoint_microros
 
 Open a **new terminal** (or `source ~/.bashrc`) so all overlays are loaded.
 
-## Connect the ESP32-S3
+## Connect the ESP32-S3 (UDP)
 
-### A) Serial USB (default)
-
-1. Plug ESP32-S3 into Orin USB.
-2. Check the device:
+ESP32 firmware uses UDP XRCE-DDS. Point the client at the Orin IP and port `8888`.
 
 ```bash
-ls -l /dev/ttyACM* /dev/ttyUSB* /dev/petcam_sensing*
-```
-
-3. Start the agent (must match baud / device on the ESP32 client):
-
-```bash
+# default is already udp4 :8888
 ./scripts/run_microros_agent.sh
+
 # or explicitly:
-ros2 launch petcam_bringup microros_agent.launch.py \
-  transport:=serial serial_dev:=/dev/ttyACM0 serial_baud:=115200
+ros2 launch petcam_bringup microros_agent.launch.py transport:=udp4 port:=8888
 ```
 
-### B) UDP over WiFi
-
-ESP32 client must use Orin’s IP and the same port.
+Optional serial USB fallback:
 
 ```bash
-TRANSPORT=udp4 PORT=8888 ./scripts/run_microros_agent.sh
-# or:
-ros2 launch petcam_bringup microros_agent.launch.py transport:=udp4 port:=8888
+TRANSPORT=serial SERIAL_DEV=/dev/ttyACM0 ./scripts/run_microros_agent.sh
 ```
 
 ### Verify link
@@ -94,11 +81,11 @@ On a good link you should see ESP32-published topics/nodes appear in the ROS 2 g
 Native build is preferred on Orin (arm64). Compose file is provided for convenience:
 
 ```bash
-# serial
-SERIAL_DEV=/dev/ttyACM0 docker compose -f docker/docker-compose.microros.yml --profile serial up
-
-# udp
+# udp (matches ESP32)
 docker compose -f docker/docker-compose.microros.yml --profile udp up
+
+# serial fallback
+SERIAL_DEV=/dev/ttyACM0 docker compose -f docker/docker-compose.microros.yml --profile serial up
 ```
 
 To build an arm64 agent image locally:
@@ -135,8 +122,8 @@ The agent transport **must** match the client XRCE config on the ESP32-S3:
 
 | ESP32 client | Orin agent launch |
 |--------------|-------------------|
+| UDP port 8888 (default) | `transport:=udp4 port:=8888` |
 | Serial USB, 115200 | `transport:=serial serial_dev:=/dev/ttyACM0 serial_baud:=115200` |
-| UDP port 8888 | `transport:=udp4 port:=8888` |
 | TCP port 8888 | `transport:=tcp4 port:=8888` |
 
 Also keep `ROS_DOMAIN_ID` consistent (default `0`).

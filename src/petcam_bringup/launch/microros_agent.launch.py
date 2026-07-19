@@ -51,8 +51,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "transport",
-                default_value="serial",
-                description="XRCE transport: serial | udp4 | tcp4",
+                default_value="udp4",
+                description="XRCE transport: udp4 | serial | tcp4 (ESP32 uses udp4)",
             ),
             DeclareLaunchArgument(
                 "serial_dev",

@@ -1,12 +1,12 @@
 # PetCam Orin <-> ESP32-S3 micro-ROS agent defaults
 #
-# Match these to the transport configured in your ESP32 micro-ROS client:
-#   serial: USB CDC (typical /dev/ttyACM0 or /dev/petcam_sensing)
-#   udp4:   WiFi / Ethernet XRCE-DDS over UDP
+# ESP32-S3 sensing unit uses UDP XRCE-DDS.
+#   udp4:   WiFi / Ethernet (default) — Orin listens on udp_port
+#   serial: USB CDC fallback (/dev/ttyACM0 or /dev/petcam_sensing)
 
 /**:
   ros__parameters:
-    transport: serial          # serial | udp4 | tcp4
+    transport: udp4            # udp4 | serial | tcp4
     serial_dev: /dev/ttyACM0   # or /dev/petcam_sensing after udev rules
     serial_baud: 115200
     udp_port: 8888
