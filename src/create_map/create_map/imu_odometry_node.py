@@ -72,6 +72,9 @@ class ImuOdometryNode(Node):
         self.declare_parameter('path_max_poses', 5000)
         self.declare_parameter('path_min_step_m', 0.0005)
         self.declare_parameter('publish_tf', True)
+        # RX diagnostics: log first N samples fully, then every Nth sample.
+        self.declare_parameter('log_rx_first_n', 5)
+        self.declare_parameter('log_rx_every_n', 25)
 
         self.frame_id = self.get_parameter('frame_id').value
         self.child_frame_id = self.get_parameter('child_frame_id').value
@@ -120,6 +123,9 @@ class ImuOdometryNode(Node):
         self._rate_count = 0
         self._rate_t0 = time.monotonic()
         self._last_hz = 0.0
+        self._last_rx: ImuSample | None = None
+        self._log_rx_first_n = int(self.get_parameter('log_rx_first_n').value)
+        self._log_rx_every_n = max(1, int(self.get_parameter('log_rx_every_n').value))
         self._auto_az: list[float] = []
         self._mode_locked = self.imu_mode != 'auto'
 
@@ -202,16 +208,42 @@ class ImuOdometryNode(Node):
             return
         hz = self._rate_count / elapsed
         self._last_hz = hz
-        if self._msg_count > 0:
-            expect = 1.0 / float(self.get_parameter('default_dt_sec').value)
+        expect = 1.0 / float(self.get_parameter('default_dt_sec').value)
+        if self._msg_count == 0:
+            self.get_logger().warn(
+                f'create_map RX: 0 msgs on {self.imu_topic} in last {elapsed:.1f}s — '
+                'ESP32 Serial OK does not mean Orin received /imu/data'
+            )
+        else:
+            rx = self._last_rx
+            st = self.reckoner.state
+            rx_s = (
+                f'a=({rx.ax:.3f},{rx.ay:.3f},{rx.az:.3f}) '
+                f'g=({rx.gx:.3f},{rx.gy:.3f},{rx.gz:.3f})'
+                if rx is not None
+                else 'a=(?,?,?) g=(?,?,?)'
+            )
             self.get_logger().info(
-                f'/imu/data rate: {hz:.1f} Hz '
-                f'(expect ~{expect:.0f} Hz / {1000.0 / expect:.0f} ms per sample) '
+                f'create_map RX: {hz:.1f} Hz (expect ~{expect:.0f}) '
                 f'total={self._msg_count} integ={self.reckoner.samples_integrated} '
-                f'dt={self.reckoner.state.dt * 1000:.1f}ms'
+                f'last[{rx_s}] → pose=({st.x:.3f},{st.y:.3f}) '
+                f'v=({st.vx:.3f},{st.vy:.3f}) dist={st.distance_m:.3f}m '
+                f'path_pts={len(self._path_msg.poses)} '
+                f'dt={st.dt * 1000:.1f}ms frame={self.reckoner.accel_frame}'
             )
         self._rate_count = 0
         self._rate_t0 = now
+
+    def _log_rx_sample(self, sample: ImuSample, frame_id: str) -> None:
+        """Log what create_map actually got on /imu/data."""
+        upcoming = self._msg_count + 1  # called before _process increments
+        if upcoming <= self._log_rx_first_n or upcoming % self._log_rx_every_n == 0:
+            self.get_logger().info(
+                f'create_map GOT #{upcoming} frame_id={frame_id!r} '
+                f'a=({sample.ax:.4f},{sample.ay:.4f},{sample.az:.4f}) '
+                f'gyro=({sample.gx:.4f},{sample.gy:.4f},{sample.gz:.4f}) '
+                f'mode={self.imu_mode}/{self.reckoner.accel_frame}'
+            )
 
     def _discover_imu(self) -> None:
         if self._msg_count > 0:
@@ -323,7 +355,10 @@ class ImuOdometryNode(Node):
         via = src or 'best_effort'
         if via != self._imu_via:
             self._imu_via = via
-            self.get_logger().info(f'Receiving /imu/data via QoS={via}')
+            self.get_logger().info(
+                f'create_map FIRST /imu/data via QoS={via} '
+                f'frame_id={msg.header.frame_id!r}'
+            )
 
         az = float(msg.linear_acceleration.z)
         self._maybe_autodetect(az)
@@ -337,6 +372,8 @@ class ImuOdometryNode(Node):
             gy=float(msg.angular_velocity.y),
             gz=float(msg.angular_velocity.z),
         )
+        self._last_rx = sample
+        self._log_rx_sample(sample, str(msg.header.frame_id))
         self._process(sample, self.get_clock().now().to_msg())
 
     def _on_raw(self, msg: Float64MultiArray) -> None:
@@ -357,6 +394,8 @@ class ImuOdometryNode(Node):
             gy=float(data[4]),
             gz=float(data[5]),
         )
+        self._last_rx = sample
+        self._log_rx_sample(sample, 'raw')
         self._process(sample, now)
 
     def _process(self, sample: ImuSample, stamp) -> None:
