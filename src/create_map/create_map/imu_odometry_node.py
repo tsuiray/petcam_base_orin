@@ -9,7 +9,13 @@ import rclpy
 from geometry_msgs.msg import PoseStamped, Quaternion, TransformStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Float32, Float64MultiArray
 from tf2_ros import TransformBroadcaster
@@ -17,14 +23,22 @@ from tf2_ros import TransformBroadcaster
 from create_map.dead_reckon import ImuDeadReckoner, ImuSample
 
 
-# Match petcam_esp32_s3: rclc_publisher_init_best_effort → BEST_EFFORT
-# Larger depth reduces drops when the viewer/callback is briefly busy.
-ESP32_IMU_QOS = QoSProfile(
-    reliability=ReliabilityPolicy.BEST_EFFORT,
-    durability=DurabilityPolicy.VOLATILE,
-    history=HistoryPolicy.KEEP_LAST,
-    depth=50,
-)
+def _qos_best_effort(depth: int = 50) -> QoSProfile:
+    return QoSProfile(
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        durability=DurabilityPolicy.VOLATILE,
+        history=HistoryPolicy.KEEP_LAST,
+        depth=depth,
+    )
+
+
+def _qos_reliable(depth: int = 50) -> QoSProfile:
+    return QoSProfile(
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.VOLATILE,
+        history=HistoryPolicy.KEEP_LAST,
+        depth=depth,
+    )
 
 
 def yaw_to_quat(yaw: float) -> Quaternion:
@@ -43,7 +57,6 @@ class ImuOdometryNode(Node):
         self.declare_parameter('prefer_raw', False)
         self.declare_parameter('frame_id', 'map')
         self.declare_parameter('child_frame_id', 'base_link')
-        # ESP32 stamp is ms-resolution; prefer receive-time deltas on Orin.
         self.declare_parameter('use_receive_time', True)
         self.declare_parameter('max_dt_sec', 0.05)
         self.declare_parameter('min_dt_sec', 0.0001)
@@ -64,6 +77,7 @@ class ImuOdometryNode(Node):
         self.publish_tf = bool(self.get_parameter('publish_tf').value)
         self.use_receive_time = bool(self.get_parameter('use_receive_time').value)
         prefer_raw = bool(self.get_parameter('prefer_raw').value)
+        self.imu_topic = str(self.get_parameter('imu_topic').value)
 
         self.reckoner = ImuDeadReckoner(
             gravity=float(self.get_parameter('gravity').value),
@@ -87,20 +101,36 @@ class ImuOdometryNode(Node):
         self.debug_pub = self.create_publisher(Float64MultiArray, '/create_map/debug', 10)
         self.tf_broadcaster = TransformBroadcaster(self) if self.publish_tf else None
 
-        imu_topic = self.get_parameter('imu_topic').value
-        raw_topic = self.get_parameter('raw_imu_topic').value
+        self._imu_subs = []
+        self._last_cb_ns = 0
+        self._imu_via = ''
 
         if prefer_raw:
-            self.create_subscription(
-                Float64MultiArray, raw_topic, self._on_raw, ESP32_IMU_QOS
+            raw_topic = self.get_parameter('raw_imu_topic').value
+            self._imu_subs.append(
+                self.create_subscription(
+                    Float64MultiArray, raw_topic, self._on_raw, _qos_best_effort()
+                )
             )
-            self.get_logger().info(f'Subscribing raw IMU Float64MultiArray on {raw_topic}')
+            self.get_logger().info(f'Subscribing raw IMU on {raw_topic}')
         else:
-            self.create_subscription(Imu, imu_topic, self._on_imu, ESP32_IMU_QOS)
+            # Dual QoS: micro-ROS agent QoS varies by build; incompatible QoS
+            # yields ZERO callbacks while agent still prints XRCE hex.
+            for label, qos in (
+                ('best_effort', _qos_best_effort()),
+                ('sensor_data', qos_profile_sensor_data),
+                ('reliable', _qos_reliable()),
+            ):
+                sub = self.create_subscription(
+                    Imu,
+                    self.imu_topic,
+                    lambda msg, src=label: self._on_imu(msg, src),
+                    qos,
+                )
+                self._imu_subs.append(sub)
             self.get_logger().info(
-                f'Subscribing sensor_msgs/Imu on {imu_topic} '
-                f'(BEST_EFFORT depth=50; dt from '
-                f'{"receive time" if self.use_receive_time else "msg stamp"})'
+                f'Subscribing {self.imu_topic} with best_effort+sensor_data+reliable '
+                f'(dt from {"receive time" if self.use_receive_time else "msg stamp"})'
             )
 
         self._path_msg = Path()
@@ -108,11 +138,37 @@ class ImuOdometryNode(Node):
         self._msg_count = 0
         self._last_state = None
         self._calibrating = True
-        # Heartbeat so /create_map/debug always exists while this node is alive
         self.create_timer(0.5, self._heartbeat)
+        self.create_timer(2.0, self._discover_imu)
         self.get_logger().info(
-            'create_map imu_odometry ready — publishing /create_map/debug heartbeat. '
-            'Keep still ~1s for calib, then move robot.'
+            'create_map imu_odometry ready — /create_map/debug heartbeat on. '
+            'Waiting for /imu/data from micro-ROS agent.'
+        )
+
+    def _discover_imu(self) -> None:
+        if self._msg_count > 0:
+            return
+        try:
+            pubs = self.get_publishers_info_by_topic(self.imu_topic)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f'topic discovery failed: {exc}')
+            return
+        if not pubs:
+            self.get_logger().warn(
+                f'No DDS publisher on {self.imu_topic}. '
+                'Agent may be up (XRCE hex) but not in this ROS graph — '
+                'check ROS_DOMAIN_ID, ROS_LOCALHOST_ONLY, and that agent was '
+                'started from the same create_map launch.'
+            )
+            return
+        parts = []
+        for p in pubs:
+            rel = str(p.qos_profile.reliability).split('.')[-1]
+            dur = str(p.qos_profile.durability).split('.')[-1]
+            parts.append(f'{p.node_name}[{rel}/{dur}]')
+        self.get_logger().warn(
+            f'{self.imu_topic} has {len(pubs)} publisher(s): {", ".join(parts)} '
+            f'but imu_odometry got 0 msgs — QoS/discovery mismatch; dual-sub active'
         )
 
     def _publish_debug(
@@ -170,15 +226,10 @@ class ImuOdometryNode(Node):
 
     def _heartbeat(self) -> None:
         if self._last_state is not None:
-            # Fresh IMU path already publishes debug; skip duplicate unless quiet
             return
         bias_ax, bias_ay = self.reckoner.bias_xy
         if self._msg_count == 0:
-            status = 0.0  # waiting for first /imu/data
-            self.get_logger().warn(
-                'No /imu/data received yet — is micro-ROS agent linked and ESP32 publishing?',
-                throttle_duration_sec=5.0,
-            )
+            status = 0.0
         elif self._calibrating:
             status = 1.0
         else:
@@ -191,18 +242,24 @@ class ImuOdometryNode(Node):
             status=status,
         )
 
-    def _msg_stamp_sec(self, stamp) -> float:
-        return float(stamp.sec) + float(stamp.nanosec) * 1e-9
-
     def _integration_stamp_sec(self, msg_stamp) -> float:
         if self.use_receive_time:
             return self.get_clock().now().nanoseconds * 1e-9
-        sec = self._msg_stamp_sec(msg_stamp)
+        sec = float(msg_stamp.sec) + float(msg_stamp.nanosec) * 1e-9
         if sec <= 0.0:
             return self.get_clock().now().nanoseconds * 1e-9
         return sec
 
-    def _on_imu(self, msg: Imu) -> None:
+    def _on_imu(self, msg: Imu, src: str = '') -> None:
+        # Deduplicate when multiple QoS subscriptions deliver the same sample
+        now_ns = self.get_clock().now().nanoseconds
+        if self._last_cb_ns and (now_ns - self._last_cb_ns) < 1_000_000:
+            return
+        self._last_cb_ns = now_ns
+        if src and src != self._imu_via:
+            self._imu_via = src
+            self.get_logger().info(f'Receiving /imu/data via QoS={src}')
+
         sample = ImuSample(
             stamp_sec=self._integration_stamp_sec(msg.header.stamp),
             ax=float(msg.linear_acceleration.x),
@@ -212,7 +269,6 @@ class ImuOdometryNode(Node):
             gy=float(msg.angular_velocity.y),
             gz=float(msg.angular_velocity.z),
         )
-        # Publish header uses ROS time now for TF/path consistency
         self._process(sample, self.get_clock().now().to_msg())
 
     def _on_raw(self, msg: Float64MultiArray) -> None:
@@ -343,6 +399,7 @@ class ImuOdometryNode(Node):
                 f'a_xy=({state.ax_body:.2f},{state.ay_body:.2f}) '
                 f'bias=({bias_ax:.2f},{bias_ay:.2f}) '
                 f'zupt={"ON" if state.zupt_active else "off"} '
+                f'via={self._imu_via or "?"} '
                 f'path_pts={len(self._path_msg.poses)} integ={self.reckoner.samples_integrated}'
             )
 
