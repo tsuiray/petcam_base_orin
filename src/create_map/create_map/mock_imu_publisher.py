@@ -7,7 +7,17 @@ import math
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
+
+
+# Match ESP32 best-effort publisher for end-to-end QoS testing
+MOCK_IMU_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+)
 
 
 class MockImuPublisher(Node):
@@ -25,7 +35,7 @@ class MockImuPublisher(Node):
         self.accel_peak = float(self.get_parameter('accel_peak').value)
         self.gravity = float(self.get_parameter('gravity').value)
 
-        self.pub = self.create_publisher(Imu, topic, 10)
+        self.pub = self.create_publisher(Imu, topic, MOCK_IMU_QOS)
         self.t0 = self.get_clock().now()
         self.timer = self.create_timer(1.0 / rate, self._tick)
         self.get_logger().info(

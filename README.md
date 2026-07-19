@@ -150,5 +150,10 @@ If your ESP32 uses a non-default device, baud, or port, pass those launch args o
 
 ### ESP32 IMU topic for create_map
 
-Default subscription: **`/imu/data`** (`sensor_msgs/Imu`).  
-If your firmware uses another name or raw floats, edit `src/create_map/config/create_map.yaml`.
+Matched to firmware [`petcam_esp32_s3`](https://github.com/tsuiray/petcam_esp32_s3)
+branch `cursor/esp32-arduino-hardening-26d4`:
+
+- Topic **`/imu/data`** (`sensor_msgs/Imu`, BEST_EFFORT, 50 Hz)
+- Accel **m/s²**, gyro **rad/s**, agent **UDP 8888**
+
+See [`docs/esp32_imu_contract.md`](docs/esp32_imu_contract.md).

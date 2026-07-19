@@ -9,12 +9,22 @@ import rclpy
 from geometry_msgs.msg import PoseStamped, Quaternion, TransformStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Float32, Float64MultiArray
 from tf2_ros import TransformBroadcaster
 
 from create_map.dead_reckon import ImuDeadReckoner, ImuSample
+
+
+# Match petcam_esp32_s3 (cursor/esp32-arduino-hardening-26d4):
+# rclc_publisher_init_best_effort → BEST_EFFORT
+ESP32_IMU_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+)
 
 
 def yaw_to_quat(yaw: float) -> Quaternion:
@@ -72,12 +82,15 @@ class ImuOdometryNode(Node):
 
         if prefer_raw:
             self.create_subscription(
-                Float64MultiArray, raw_topic, self._on_raw, qos_profile_sensor_data
+                Float64MultiArray, raw_topic, self._on_raw, ESP32_IMU_QOS
             )
             self.get_logger().info(f'Subscribing raw IMU Float64MultiArray on {raw_topic}')
         else:
-            self.create_subscription(Imu, imu_topic, self._on_imu, qos_profile_sensor_data)
-            self.get_logger().info(f'Subscribing sensor_msgs/Imu on {imu_topic}')
+            self.create_subscription(Imu, imu_topic, self._on_imu, ESP32_IMU_QOS)
+            self.get_logger().info(
+                f'Subscribing sensor_msgs/Imu on {imu_topic} '
+                f'(BEST_EFFORT; matches petcam_esp32_s3 /imu/data @ 50 Hz)'
+            )
 
         self._path_msg = Path()
         self._path_msg.header.frame_id = self.frame_id

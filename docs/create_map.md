@@ -23,16 +23,23 @@ ESP32 MPU6050  --UDP XRCE-->  micro_ros_agent  -->  /imu/data (sensor_msgs/Imu)
 
 ## Expected ESP32 message
 
-Prefer `sensor_msgs/Imu` on topic **`/imu/data`**:
+Aligned with firmware branch **`cursor/esp32-arduino-hardening-26d4`**
+([petcam_esp32_s3](https://github.com/tsuiray/petcam_esp32_s3)):
 
-| Field | Meaning |
-|-------|---------|
-| `linear_acceleration.{x,y,z}` | m/s² (set `accel_in_g: true` in config if your firmware sends g) |
-| `angular_velocity.{x,y,z}` | rad/s |
-| `header.stamp` | used for Δt; if zero, Orin receive time is used |
+| Field | Value |
+|-------|-------|
+| Topic | `/imu/data` |
+| Type | `sensor_msgs/Imu` |
+| QoS | BEST_EFFORT |
+| Rate | 50 Hz (20 ms) |
+| Accel | m/s² |
+| Gyro | rad/s |
+| Agent | UDP 8888 |
 
-Also accepted: `std_msgs/Float64MultiArray` on `/imu/raw` with  
-`[ax, ay, az, gx, gy, gz]` — set `prefer_raw: true` in `config/create_map.yaml`.
+Full contract: [`docs/esp32_imu_contract.md`](esp32_imu_contract.md)
+
+Also accepted (not used by current ESP32 FW): `std_msgs/Float64MultiArray` on `/imu/raw`
+with `[ax, ay, az, gx, gy, gz]` — set `prefer_raw: true` in config.
 
 ## Run with real ESP32
 
