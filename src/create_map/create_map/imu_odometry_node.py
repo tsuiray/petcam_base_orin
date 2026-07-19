@@ -106,8 +106,89 @@ class ImuOdometryNode(Node):
         self._path_msg = Path()
         self._path_msg.header.frame_id = self.frame_id
         self._msg_count = 0
+        self._last_state = None
+        self._calibrating = True
+        # Heartbeat so /create_map/debug always exists while this node is alive
+        self.create_timer(0.5, self._heartbeat)
         self.get_logger().info(
-            'create_map imu_odometry ready — keep still ~1s for calib, then move robot'
+            'create_map imu_odometry ready — publishing /create_map/debug heartbeat. '
+            'Keep still ~1s for calib, then move robot.'
+        )
+
+    def _publish_debug(
+        self,
+        *,
+        dt=0.0,
+        ax_body=0.0,
+        ay_body=0.0,
+        ax_world=0.0,
+        ay_world=0.0,
+        vx=0.0,
+        vy=0.0,
+        zupt=False,
+        still_sec=0.0,
+        distance=0.0,
+        x=0.0,
+        y=0.0,
+        dt_raw=0.0,
+        dt_clamped=False,
+        ax_raw=0.0,
+        ay_raw=0.0,
+        bias_ax=0.0,
+        bias_ay=0.0,
+        path_pts=0.0,
+        integ=0.0,
+        status=0.0,
+    ) -> None:
+        """status: 0=waiting_imu 1=calibrating 2=running"""
+        dbg = Float64MultiArray()
+        dbg.data = [
+            float(dt),
+            float(ax_body),
+            float(ay_body),
+            float(ax_world),
+            float(ay_world),
+            float(vx),
+            float(vy),
+            1.0 if zupt else 0.0,
+            float(still_sec),
+            float(distance),
+            float(x),
+            float(y),
+            float(dt_raw),
+            1.0 if dt_clamped else 0.0,
+            float(ax_raw),
+            float(ay_raw),
+            float(bias_ax),
+            float(bias_ay),
+            float(path_pts),
+            float(integ),
+            float(status),
+            float(self._msg_count),
+        ]
+        self.debug_pub.publish(dbg)
+
+    def _heartbeat(self) -> None:
+        if self._last_state is not None:
+            # Fresh IMU path already publishes debug; skip duplicate unless quiet
+            return
+        bias_ax, bias_ay = self.reckoner.bias_xy
+        if self._msg_count == 0:
+            status = 0.0  # waiting for first /imu/data
+            self.get_logger().warn(
+                'No /imu/data received yet — is micro-ROS agent linked and ESP32 publishing?',
+                throttle_duration_sec=5.0,
+            )
+        elif self._calibrating:
+            status = 1.0
+        else:
+            status = 2.0
+        self._publish_debug(
+            bias_ax=bias_ax,
+            bias_ay=bias_ay,
+            path_pts=len(self._path_msg.poses),
+            integ=self.reckoner.samples_integrated,
+            status=status,
         )
 
     def _msg_stamp_sec(self, stamp) -> float:
@@ -158,9 +239,23 @@ class ImuOdometryNode(Node):
         state = self.reckoner.update(sample)
         self._msg_count += 1
         if state is None:
+            self._calibrating = True
             if self._msg_count % 25 == 0:
                 self.get_logger().info('Calibrating IMU bias at rest…')
+            bias_ax, bias_ay = self.reckoner.bias_xy
+            self._publish_debug(
+                ax_raw=sample.ax,
+                ay_raw=sample.ay,
+                bias_ax=bias_ax,
+                bias_ay=bias_ay,
+                path_pts=len(self._path_msg.poses),
+                integ=0.0,
+                status=1.0,
+            )
             return
+
+        self._calibrating = False
+        self._last_state = state
 
         pose = PoseStamped()
         pose.header.stamp = stamp
@@ -176,13 +271,11 @@ class ImuOdometryNode(Node):
             if not self._path_msg.poses:
                 self._path_msg.poses.append(pose)
             elif state.path_appended:
-                # Replace last if still nearly same start, else append
                 self._path_msg.poses.append(pose)
             max_poses = int(self.get_parameter('path_max_poses').value)
             if len(self._path_msg.poses) > max_poses:
                 self._path_msg.poses = self._path_msg.poses[-max_poses:]
         else:
-            # Keep last pose current even when not appending a new vertex
             if self._path_msg.poses:
                 self._path_msg.poses[-1] = pose
                 self._path_msg.header.stamp = stamp
@@ -205,30 +298,29 @@ class ImuOdometryNode(Node):
         self.dist_pub.publish(dist)
 
         bias_ax, bias_ay = self.reckoner.bias_xy
-        dbg = Float64MultiArray()
-        dbg.data = [
-            float(state.dt),
-            float(state.ax_body),
-            float(state.ay_body),
-            float(state.ax_world),
-            float(state.ay_world),
-            float(state.vx),
-            float(state.vy),
-            1.0 if state.zupt_active else 0.0,
-            float(state.still_sec),
-            float(state.distance_m),
-            float(state.x),
-            float(state.y),
-            float(state.dt_raw),
-            1.0 if state.dt_clamped else 0.0,
-            float(state.ax_raw),
-            float(state.ay_raw),
-            float(bias_ax),
-            float(bias_ay),
-            float(len(self._path_msg.poses)),
-            float(self.reckoner.samples_integrated),
-        ]
-        self.debug_pub.publish(dbg)
+        self._publish_debug(
+            dt=state.dt,
+            ax_body=state.ax_body,
+            ay_body=state.ay_body,
+            ax_world=state.ax_world,
+            ay_world=state.ay_world,
+            vx=state.vx,
+            vy=state.vy,
+            zupt=state.zupt_active,
+            still_sec=state.still_sec,
+            distance=state.distance_m,
+            x=state.x,
+            y=state.y,
+            dt_raw=state.dt_raw,
+            dt_clamped=state.dt_clamped,
+            ax_raw=state.ax_raw,
+            ay_raw=state.ay_raw,
+            bias_ax=bias_ax,
+            bias_ay=bias_ay,
+            path_pts=len(self._path_msg.poses),
+            integ=self.reckoner.samples_integrated,
+            status=2.0,
+        )
 
         if self.tf_broadcaster is not None:
             tf = TransformStamped()
