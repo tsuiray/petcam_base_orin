@@ -104,6 +104,23 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now petcam-microros-agent.service
 ```
 
+## First app: create_map (IMU path)
+
+After micro-ROS agent links the ESP32, run the mapping app (MPU6050 → distance → live map):
+
+```bash
+./scripts/build_petcam_ws.sh
+ros2 launch create_map create_map.launch.py
+```
+
+Offline verify (no ESP32, synthetic 20 ms IMU):
+
+```bash
+ros2 launch create_map create_map.launch.py use_mock_imu:=true start_microros_agent:=false
+```
+
+Details: [`docs/create_map.md`](docs/create_map.md)
+
 ## Repo layout
 
 | Path | Role |
@@ -113,6 +130,7 @@ sudo systemctl enable --now petcam-microros-agent.service
 | `scripts/build_petcam_ws.sh` | `colcon build` this workspace |
 | `scripts/run_microros_agent.sh` | Source overlays + launch agent |
 | `src/petcam_bringup/` | Launch + health-check helpers |
+| `src/create_map/` | IMU dead-reckon + live path map |
 | `docker/` | Optional containerized agent |
 | `systemd/` | Optional service unit |
 
@@ -129,3 +147,8 @@ The agent transport **must** match the client XRCE config on the ESP32-S3:
 Also keep `ROS_DOMAIN_ID` consistent (default `0`).
 
 If your ESP32 uses a non-default device, baud, or port, pass those launch args or set `SERIAL_DEV` / `SERIAL_BAUD` / `PORT` / `TRANSPORT` when calling `run_microros_agent.sh`.
+
+### ESP32 IMU topic for create_map
+
+Default subscription: **`/imu/data`** (`sensor_msgs/Imu`).  
+If your firmware uses another name or raw floats, edit `src/create_map/config/create_map.yaml`.

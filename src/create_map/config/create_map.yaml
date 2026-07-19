@@ -1,0 +1,49 @@
+# create_map — Orin base station IMU path mapping
+
+imu_odometry:
+  ros__parameters:
+    # ESP32 micro-ROS IMU topic (sensor_msgs/Imu). Change if your firmware differs.
+    imu_topic: "/imu/data"
+    # Also accept raw 6-float array [ax,ay,az,gx,gy,gz] if ESP32 publishes this:
+    raw_imu_topic: "/imu/raw"
+    prefer_raw: false
+
+    frame_id: "map"
+    child_frame_id: "base_link"
+
+    # Expected packet period ~20 ms; dt is measured from consecutive message stamps
+    # (falls back to receive-time delta if stamp is zero).
+    max_dt_sec: 0.1
+    min_dt_sec: 0.001
+
+    # MPU6050 accel often in m/s^2 already via micro-ROS; set true if units are g
+    accel_in_g: false
+    gravity: 9.80665
+
+    # Simple stationary detection: if |a|-g and |gyro| small, zero velocity (ZUPT)
+    enable_zupt: true
+    zupt_accel_epsilon: 0.35
+    zupt_gyro_epsilon: 0.08
+
+    # High-pass-ish bias: subtract running mean of accel when nearly still
+    calibrate_on_start_sec: 1.0
+
+    path_max_poses: 5000
+    publish_tf: true
+
+map_viewer:
+  ros__parameters:
+    path_topic: "/create_map/path"
+    pose_topic: "/create_map/pose"
+    window_name: "PetCam create_map"
+    pixels_per_meter: 80.0
+    trail_thickness: 2
+    show_grid: true
+    grid_spacing_m: 0.5
+
+mock_imu:
+  ros__parameters:
+    imu_topic: "/imu/data"
+    rate_hz: 50.0
+    # Square-ish path for verify without ESP32
+    accel_peak: 0.4
