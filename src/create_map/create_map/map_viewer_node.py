@@ -152,20 +152,27 @@ class MapViewerNode(Node):
         vy = self._debug[6] if len(self._debug) > 6 else 0.0
         zupt = self._debug[7] >= 0.5 if len(self._debug) > 7 else False
         still = self._debug[8] if len(self._debug) > 8 else 0.0
+        dt_raw_ms = self._debug[12] * 1000.0 if len(self._debug) > 12 else 0.0
+        clamped = self._debug[13] >= 0.5 if len(self._debug) > 13 else False
+        ax_raw = self._debug[14] if len(self._debug) > 14 else 0.0
+        ay_raw = self._debug[15] if len(self._debug) > 15 else 0.0
+        integ = int(self._debug[19]) if len(self._debug) > 19 else 0
 
         hint = 'MOVE / shake robot to draw path'
         if self._distance_m < 0.005 and unique_span < 0.005:
-            hint = 'No motion yet — push robot (keep still 1s at start for calib)'
+            hint = 'No motion yet — push robot (still 1s at start for calib)'
         elif zupt:
             hint = 'ZUPT on (stationary) — move to continue path'
+        elif clamped:
+            hint = 'dt clamped (packet gap) — check CPU / WiFi'
 
         hud = [
             'PetCam create_map',
             f'distance: {self._distance_m:.3f} m',
-            f'path pts: {len(self._path_xy)}  span: {unique_span*100:.1f} cm',
-            f'dt: {dt_ms:.1f} ms  v: ({vx:.2f},{vy:.2f}) m/s',
-            f'a_xy: ({ax_b:.2f},{ay_b:.2f})  zupt: {"ON" if zupt else "off"} still:{still:.2f}s',
-            f'scale: {self.ppm:.0f} px/m',
+            f'path pts: {len(self._path_xy)}  span: {unique_span*100:.1f} cm  integ: {integ}',
+            f'dt: {dt_ms:.1f} ms (raw {dt_raw_ms:.1f})  v: ({vx:.2f},{vy:.2f})',
+            f'a_raw: ({ax_raw:.2f},{ay_raw:.2f})  a_xy: ({ax_b:.2f},{ay_b:.2f})',
+            f'zupt: {"ON" if zupt else "off"} still:{still:.2f}s  scale: {self.ppm:.0f} px/m',
             hint,
         ]
         for i, line in enumerate(hud):

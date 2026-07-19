@@ -31,6 +31,9 @@ class OdomState:
     distance_m: float = 0.0
     # Debug / HUD fields (last sample)
     dt: float = 0.0
+    dt_raw: float = 0.0
+    ax_raw: float = 0.0
+    ay_raw: float = 0.0
     ax_body: float = 0.0
     ay_body: float = 0.0
     ax_world: float = 0.0
@@ -38,6 +41,7 @@ class OdomState:
     zupt_active: bool = False
     still_sec: float = 0.0
     path_appended: bool = False
+    dt_clamped: bool = False
 
 
 class ImuDeadReckoner:
@@ -52,10 +56,11 @@ class ImuDeadReckoner:
         zupt_accel_epsilon: float = 0.45,
         zupt_gyro_epsilon: float = 0.15,
         zupt_hold_sec: float = 0.35,
-        max_dt_sec: float = 0.1,
-        min_dt_sec: float = 0.001,
+        max_dt_sec: float = 0.05,
+        min_dt_sec: float = 1e-4,
+        default_dt_sec: float = 0.02,
         path_max_poses: int = 5000,
-        path_min_step_m: float = 0.002,
+        path_min_step_m: float = 0.0005,
         calibrate_on_start_sec: float = 1.0,
     ) -> None:
         self.gravity = gravity
@@ -66,6 +71,7 @@ class ImuDeadReckoner:
         self.zupt_hold_sec = zupt_hold_sec
         self.max_dt_sec = max_dt_sec
         self.min_dt_sec = min_dt_sec
+        self.default_dt_sec = default_dt_sec
         self.path_max_poses = path_max_poses
         self.path_min_step_m = path_min_step_m
         self.calibrate_on_start_sec = calibrate_on_start_sec
@@ -78,6 +84,12 @@ class ImuDeadReckoner:
         self._calib_start: Optional[float] = None
         self._calibrated = calibrate_on_start_sec <= 0.0
         self._still_sec = 0.0
+        self.samples_integrated = 0
+        self.samples_clamped_dt = 0
+
+    @property
+    def bias_xy(self) -> Tuple[float, float]:
+        return self._bias_ax, self._bias_ay
 
     def reset(self) -> None:
         self.state = OdomState()
@@ -88,6 +100,8 @@ class ImuDeadReckoner:
         self._calib_start = None
         self._calibrated = self.calibrate_on_start_sec <= 0.0
         self._still_sec = 0.0
+        self.samples_integrated = 0
+        self.samples_clamped_dt = 0
 
     def update(self, sample: ImuSample) -> Optional[OdomState]:
         ax, ay, az = sample.ax, sample.ay, sample.az
@@ -106,19 +120,43 @@ class ImuDeadReckoner:
                 self._bias_ay = float(np.mean(arr[:, 1]))
                 self._calibrated = True
                 self._prev_stamp = sample.stamp_sec
-                self.state.path_xy.append((0.0, 0.0))
+                self.state.path_xy = [(0.0, 0.0)]
+                self.state.ax_raw = ax
+                self.state.ay_raw = ay
+                self.state.path_appended = True
+                return self.state  # publish origin immediately after calib
             return None
 
         if self._prev_stamp is None:
             self._prev_stamp = sample.stamp_sec
-            self.state.path_xy.append((0.0, 0.0))
+            if not self.state.path_xy:
+                self.state.path_xy.append((0.0, 0.0))
+            self.state.path_appended = True
             return self.state
 
-        dt = sample.stamp_sec - self._prev_stamp
+        dt_raw = sample.stamp_sec - self._prev_stamp
         self._prev_stamp = sample.stamp_sec
-        if dt < self.min_dt_sec or dt > self.max_dt_sec:
-            # Drop bad / out-of-order packets; keep stamp for next delta
+
+        # Duplicate / out-of-order: ignore this sample for integration
+        if dt_raw < self.min_dt_sec:
+            self.state.dt = dt_raw
+            self.state.dt_raw = dt_raw
+            self.state.path_appended = False
             return self.state
+
+        # Large gaps (DDS drops, ms stamp jumps): CLAMP instead of dropping forever.
+        # Old behavior (drop if dt>max) left path stuck at 1 point.
+        dt_clamped = False
+        if dt_raw > self.max_dt_sec:
+            dt = self.default_dt_sec
+            dt_clamped = True
+            self.samples_clamped_dt += 1
+            # Gap: don't trust coasting velocity across a hole
+            self.state.vx = 0.0
+            self.state.vy = 0.0
+            self._still_sec = 0.0
+        else:
+            dt = dt_raw
 
         # Body-frame horizontal accel with simple bias removal
         ax_b = ax - self._bias_ax
@@ -143,8 +181,6 @@ class ImuDeadReckoner:
             and math.hypot(ax_b, ay_b) < self.zupt_accel_epsilon
         )
 
-        # IMPORTANT: only zero velocity after sustained stillness.
-        # Instant ZUPT kills coasting (constant-velocity) motion where |a|≈g.
         if sample_still:
             self._still_sec += dt
         else:
@@ -164,6 +200,7 @@ class ImuDeadReckoner:
         self.state.x += dx
         self.state.y += dy
         self.state.distance_m += step
+        self.samples_integrated += 1
 
         appended = False
         if not self.state.path_xy:
@@ -178,6 +215,10 @@ class ImuDeadReckoner:
                     self.state.path_xy = self.state.path_xy[-self.path_max_poses :]
 
         self.state.dt = dt
+        self.state.dt_raw = dt_raw
+        self.state.dt_clamped = dt_clamped
+        self.state.ax_raw = ax
+        self.state.ay_raw = ay
         self.state.ax_body = ax_b
         self.state.ay_body = ay_b
         self.state.ax_world = ax_w

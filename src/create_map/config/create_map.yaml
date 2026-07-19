@@ -17,8 +17,10 @@ imu_odometry:
     frame_id: "map"
     child_frame_id: "base_link"
 
-    max_dt_sec: 0.1
-    min_dt_sec: 0.001
+    max_dt_sec: 0.05
+    min_dt_sec: 0.0001
+    default_dt_sec: 0.02
+    use_receive_time: true
 
     accel_in_g: false
     gravity: 9.80665
@@ -32,7 +34,7 @@ imu_odometry:
 
     calibrate_on_start_sec: 1.0
     path_max_poses: 5000
-    path_min_step_m: 0.002
+    path_min_step_m: 0.0005
     publish_tf: true
 
 map_viewer:
