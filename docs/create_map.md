@@ -2,12 +2,12 @@
 
 ## Goal
 
-ESP32-S3 sends MPU6050 6-axis IMU (~every **20 ms** over micro-ROS UDP).
-Orin `create_map` app:
+ESP32 publishes IMU at **50 Hz** (each sample = **20 ms** of motion).
+Orin `create_map`:
 
-1. Receives IMU packets
-2. Uses **Δt between consecutive packets** to integrate accel → velocity → position
-3. Draws the robot path on a live map window
+1. Receives `/imu/data`
+2. Integrates with **fixed dt=0.02 s** in SIM mode (not Wi‑Fi receive jitter)
+3. Draws the path; ESP32 SIM L-home should **overlap** each lap
 
 ## Data flow
 
@@ -23,33 +23,36 @@ ESP32 MPU6050  --UDP XRCE-->  micro_ros_agent  -->  /imu/data (sensor_msgs/Imu)
 
 ## Expected ESP32 message
 
-Aligned with firmware branch **`cursor/esp32-arduino-hardening-26d4`**
-([petcam_esp32_s3](https://github.com/tsuiray/petcam_esp32_s3)):
+Aligned with firmware branch **`main`**
+([petcam_esp32_s3](https://github.com/tsuiray/petcam_esp32_s3) — `imu_sim.cpp`):
 
 | Field | Value |
 |-------|-------|
 | Topic | `/imu/data` |
 | Type | `sensor_msgs/Imu` |
 | QoS | BEST_EFFORT |
-| Rate | 50 Hz (20 ms) |
-| Accel | m/s² |
-| Gyro | rad/s |
+| Rate | **50 Hz** (20 ms/sample) |
+| SIM accel | **world-frame** m/s², `az=0` |
+| REAL accel | body-frame m/s² + gravity |
 | Agent | UDP 8888 |
 
 Full contract: [`docs/esp32_imu_contract.md`](esp32_imu_contract.md)
 
-Also accepted (not used by current ESP32 FW): `std_msgs/Float64MultiArray` on `/imu/raw`
-with `[ax, ay, az, gx, gy, gz]` — set `prefer_raw: true` in config.
-
-## Run with real ESP32
+## Run with ESP32 SIM (default)
 
 ```bash
-# terminals already sourced (ROS + microros_ws + petcam_base_orin)
-ros2 launch create_map create_map.launch.py
-# starts: micro-ROS agent udp4:8888 + imu_odometry + map_viewer
+./scripts/run_create_map.sh
+# imu_mode:=sim → world-frame + fixed 20 ms
+# log should show: /imu/data rate: ~50 Hz
 ```
 
-Point ESP32 agent IP at Orin, port **8888**. Move the robot; the OpenCV window shows the path.
+Point ESP32 agent IP at Orin, port **8888**. L-path (~500 sq ft) should redraw on itself each lap.
+
+## REAL MPU6050
+
+```bash
+./scripts/run_create_map.sh imu_mode:=real
+```
 
 ## Verify without ESP32 (mock 20 ms IMU)
 
