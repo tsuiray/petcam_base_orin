@@ -12,19 +12,18 @@ if [[ ! -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
 fi
 
 # shellcheck source=/dev/null
-source "/opt/ros/${ROS_DISTRO}/setup.bash"
+source "${REPO_ROOT}/scripts/lib/source_ros.sh"
+petcam_source "/opt/ros/${ROS_DISTRO}/setup.bash"
 
 if [[ -f "${MICROROS_WS}/install/local_setup.bash" ]]; then
-  # shellcheck source=/dev/null
-  source "${MICROROS_WS}/install/local_setup.bash"
+  petcam_source "${MICROROS_WS}/install/local_setup.bash"
 fi
 
 cd "${REPO_ROOT}"
 rosdep install --from-paths src --ignore-src -y --rosdistro "${ROS_DISTRO}" || true
 colcon build --symlink-install
 
-# shellcheck source=/dev/null
-source "${REPO_ROOT}/install/local_setup.bash"
+petcam_source "${REPO_ROOT}/install/local_setup.bash"
 
 BASHRC="${HOME}/.bashrc"
 MARKER="# >>> petcam base orin >>>"

@@ -4,15 +4,21 @@ set -euo pipefail
 
 ROS_DISTRO="${ROS_DISTRO:-humble}"
 
-if [[ -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
+# ROS setup.bash trips `set -u` on optional AMENT_* vars
+source_ros() {
+  set +u
   # shellcheck source=/dev/null
-  source "/opt/ros/${ROS_DISTRO}/setup.bash"
+  source "$1"
+  set -u
+}
+
+if [[ -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
+  source_ros "/opt/ros/${ROS_DISTRO}/setup.bash"
 fi
 
 MICROROS_WS="${MICROROS_WS:-${HOME}/microros_ws}"
 if [[ -f "${MICROROS_WS}/install/local_setup.bash" ]]; then
-  # shellcheck source=/dev/null
-  source "${MICROROS_WS}/install/local_setup.bash"
+  source_ros "${MICROROS_WS}/install/local_setup.bash"
 fi
 
 echo "==> micro_ros_agent package:"

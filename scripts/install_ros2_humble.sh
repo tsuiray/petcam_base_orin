@@ -80,7 +80,8 @@ if ! grep -Fq "${MARKER}" "${BASHRC}" 2>/dev/null; then
 fi
 
 # shellcheck source=/dev/null
-source "/opt/ros/${ROS_DISTRO}/setup.bash"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/source_ros.sh"
+petcam_source "/opt/ros/${ROS_DISTRO}/setup.bash"
 echo "==> ROS 2 ${ROS_DISTRO} installed."
 echo "    Open a new shell or: source /opt/ros/${ROS_DISTRO}/setup.bash"
 echo "    Next: ./scripts/install_microros_agent.sh"

@@ -15,7 +15,8 @@ if [[ ! -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
 fi
 
 # shellcheck source=/dev/null
-source "/opt/ros/${ROS_DISTRO}/setup.bash"
+source "${REPO_ROOT}/scripts/lib/source_ros.sh"
+petcam_source "/opt/ros/${ROS_DISTRO}/setup.bash"
 
 echo "==> micro-ROS workspace: ${MICROROS_WS}"
 mkdir -p "${MICROROS_WS}/src"
@@ -39,8 +40,7 @@ rosdep install --from-paths src --ignore-src -y
 
 echo "==> Building micro_ros_setup"
 colcon build --packages-select micro_ros_setup
-# shellcheck source=/dev/null
-source "${MICROROS_WS}/install/local_setup.bash"
+petcam_source "${MICROROS_WS}/install/local_setup.bash"
 
 if [[ ! -d src/micro_ros_msgs ]] || [[ ! -d src/uros ]]; then
   echo "==> Creating micro-ROS agent workspace contents"
@@ -52,8 +52,7 @@ fi
 echo "==> Building micro-ROS agent"
 # Jetson-friendly flags: prefer system logger libs when available
 ros2 run micro_ros_setup build_agent.sh
-# shellcheck source=/dev/null
-source "${MICROROS_WS}/install/local_setup.bash"
+petcam_source "${MICROROS_WS}/install/local_setup.bash"
 
 if ! ros2 pkg prefix micro_ros_agent >/dev/null 2>&1; then
   echo "ERROR: micro_ros_agent package not found after build."

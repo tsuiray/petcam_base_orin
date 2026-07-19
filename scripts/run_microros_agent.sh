@@ -13,19 +13,18 @@ if [[ -f "${REPO_ROOT}/.local/microros.env" ]]; then
 fi
 
 # shellcheck source=/dev/null
-source "/opt/ros/${ROS_DISTRO}/setup.bash"
+source "${REPO_ROOT}/scripts/lib/source_ros.sh"
+petcam_source "/opt/ros/${ROS_DISTRO}/setup.bash"
 
 if [[ -f "${MICROROS_WS}/install/local_setup.bash" ]]; then
-  # shellcheck source=/dev/null
-  source "${MICROROS_WS}/install/local_setup.bash"
+  petcam_source "${MICROROS_WS}/install/local_setup.bash"
 else
   echo "micro-ROS agent not built. Run: ${REPO_ROOT}/scripts/install_microros_agent.sh"
   exit 1
 fi
 
 if [[ -f "${REPO_ROOT}/install/local_setup.bash" ]]; then
-  # shellcheck source=/dev/null
-  source "${REPO_ROOT}/install/local_setup.bash"
+  petcam_source "${REPO_ROOT}/install/local_setup.bash"
 else
   echo "petcam workspace not built. Run: ${REPO_ROOT}/scripts/build_petcam_ws.sh"
   exit 1
