@@ -195,8 +195,11 @@ class ImuDeadReckoner:
         horiz = math.hypot(ax_b, ay_b)
 
         if self.accel_frame == 'world':
-            # SIM has az=0 (no gravity). Stillness = near-zero horizontal accel + gyro.
-            sample_still = horiz < self.zupt_accel_epsilon and gyro_norm < self.zupt_gyro_epsilon
+            # ESP32 SIM edge accel is often only ~0.06–0.13 m/s^2. A loose
+            # epsilon (e.g. 0.08) falsely marks motion as "still" and zeros
+            # velocity → empty map. Only snap on true settle markers (a≈0).
+            sample_still = horiz < 1e-3 and gyro_norm < 1e-3
+            zupt_hold = self.default_dt_sec  # one settle sample is enough
         else:
             accel_norm = math.sqrt(ax * ax + ay * ay + az * az)
             sample_still = (
@@ -204,25 +207,21 @@ class ImuDeadReckoner:
                 and gyro_norm < self.zupt_gyro_epsilon
                 and horiz < self.zupt_accel_epsilon
             )
+            zupt_hold = self.zupt_hold_sec
 
         if sample_still:
             self._still_sec += dt
         else:
             self._still_sec = 0.0
 
-        # SIM corners publish a=0 settle samples; snap velocity quickly so laps overlap.
-        zupt_hold = (
-            min(self.zupt_hold_sec, 3.0 * self.default_dt_sec)
-            if self.accel_frame == 'world'
-            else self.zupt_hold_sec
-        )
+        # Always apply accel first (SIM settle has a=0 so this is a no-op there).
+        self.state.vx += ax_w * dt
+        self.state.vy += ay_w * dt
+
         zupt_active = self.enable_zupt and self._still_sec >= zupt_hold
         if zupt_active:
             self.state.vx = 0.0
             self.state.vy = 0.0
-        else:
-            self.state.vx += ax_w * dt
-            self.state.vy += ay_w * dt
 
         dx = self.state.vx * dt
         dy = self.state.vy * dt

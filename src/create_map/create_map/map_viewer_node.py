@@ -158,20 +158,28 @@ class MapViewerNode(Node):
         ay_raw = self._debug[15] if len(self._debug) > 15 else 0.0
         integ = int(self._debug[19]) if len(self._debug) > 19 else 0
 
-        hint = 'MOVE / shake robot to draw path'
-        if self._distance_m < 0.005 and unique_span < 0.005:
-            hint = 'No motion yet — push robot (still 1s at start for calib)'
+        hz = self._debug[22] if len(self._debug) > 22 else 0.0
+        status = int(self._debug[20]) if len(self._debug) > 20 else -1
+        msg_n = int(self._debug[21]) if len(self._debug) > 21 else 0
+
+        hint = 'ESP32 SIM L-path should grow (~50 Hz)'
+        if msg_n == 0 and status == 0:
+            hint = 'No /imu/data yet — check agent :8888 / ESP32'
+        elif self._distance_m < 0.005 and unique_span < 0.005 and integ > 10:
+            hint = 'Receiving IMU but no motion — check imu_mode:=sim + rebuild'
+        elif self._distance_m < 0.005 and unique_span < 0.005:
+            hint = 'Waiting for motion samples…'
         elif zupt:
-            hint = 'ZUPT on (stationary) — move to continue path'
+            hint = 'Corner settle (v snapped) — path should continue'
         elif clamped:
             hint = 'dt clamped (packet gap) — check CPU / WiFi'
 
         hud = [
             'PetCam create_map',
             f'distance: {self._distance_m:.3f} m',
-            f'path pts: {len(self._path_xy)}  span: {unique_span*100:.1f} cm  integ: {integ}',
-            f'dt: {dt_ms:.1f} ms (raw {dt_raw_ms:.1f})  v: ({vx:.2f},{vy:.2f})',
-            f'a_raw: ({ax_raw:.2f},{ay_raw:.2f})  a_xy: ({ax_b:.2f},{ay_b:.2f})',
+            f'path pts: {len(self._path_xy)}  span: {unique_span:.2f} m  integ: {integ}',
+            f'imu: {hz:.0f} Hz  msgs: {msg_n}  dt: {dt_ms:.1f} ms (raw {dt_raw_ms:.1f})',
+            f'v: ({vx:.2f},{vy:.2f})  a_raw: ({ax_raw:.2f},{ay_raw:.2f})',
             f'zupt: {"ON" if zupt else "off"} still:{still:.2f}s  scale: {self.ppm:.0f} px/m',
             hint,
         ]

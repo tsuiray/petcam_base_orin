@@ -30,9 +30,11 @@ imu_odometry:
     accel_in_g: false
     gravity: 9.80665
 
+    # SIM: dead_reckon snaps v=0 only on a≈0 settle markers (not this epsilon).
+    # REAL: uses these thresholds with gravity check.
     enable_zupt: true
-    zupt_accel_epsilon: 0.08
-    zupt_gyro_epsilon: 0.08
+    zupt_accel_epsilon: 0.45
+    zupt_gyro_epsilon: 0.15
     zupt_hold_sec: 0.35
 
     path_max_poses: 5000

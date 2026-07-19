@@ -22,8 +22,6 @@ def test_esp32_sim_lap_closes_with_world_fixed_dt():
         use_fixed_dt=True,
         default_dt_sec=dt,
         enable_zupt=True,
-        zupt_accel_epsilon=0.05,
-        zupt_gyro_epsilon=0.05,
         path_min_step_m=0.001,
     )
 
@@ -41,6 +39,31 @@ def test_esp32_sim_lap_closes_with_world_fixed_dt():
     assert len(dr.state.path_xy) > 20
 
 
+def test_low_sim_accel_is_not_treated_as_still():
+    """Regression: ZUPT epsilon must not kill SIM edges with a≈0.06–0.13."""
+    dt = 0.02
+    dr = ImuDeadReckoner(
+        calibrate_on_start_sec=0.0,
+        accel_frame='world',
+        use_fixed_dt=True,
+        default_dt_sec=dt,
+        enable_zupt=True,
+        path_min_step_m=0.0,
+    )
+    t = 0.0
+    dr.update(ImuSample(t, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    t += dt
+    # Typical short-edge SIM accel magnitude
+    for _ in range(50):
+        st = dr.update(ImuSample(t, 0.07, 0.0, 0.0, 0.0, 0.0, 0.0))
+        t += dt
+    assert st is not None
+    assert not st.zupt_active
+    assert st.x > 0.02
+    assert st.vx > 0.03
+    assert st.distance_m > 0.02
+
+
 def test_body_frame_rotation_breaks_sim_path():
     """Shows why create_map must NOT rotate ESP32 SIM accel by yaw."""
     dt = 0.02
@@ -51,15 +74,12 @@ def test_body_frame_rotation_breaks_sim_path():
         use_fixed_dt=True,
         default_dt_sec=dt,
         enable_zupt=True,
-        zupt_accel_epsilon=0.05,
-        zupt_gyro_epsilon=0.05,
         path_min_step_m=0.001,
     )
     t = 0.0
     for s in samples:
         bad.update(ImuSample(t, s.ax, s.ay, 0.0, 0.0, 0.0, s.gz))
         t += dt
-    # Body-frame rotation of world accel does not close.
     assert abs(bad.state.x) > 0.5 or abs(bad.state.y) > 0.5
 
 

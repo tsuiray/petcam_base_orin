@@ -96,12 +96,8 @@ class ImuOdometryNode(Node):
             accel_frame=accel_frame,
             use_fixed_dt=use_fixed_dt,
             enable_zupt=bool(self.get_parameter('enable_zupt').value),
-            zupt_accel_epsilon=float(self.get_parameter('zupt_accel_epsilon').value)
-            if self.imu_mode != 'sim'
-            else min(float(self.get_parameter('zupt_accel_epsilon').value), 0.08),
-            zupt_gyro_epsilon=float(self.get_parameter('zupt_gyro_epsilon').value)
-            if self.imu_mode != 'sim'
-            else min(float(self.get_parameter('zupt_gyro_epsilon').value), 0.08),
+            zupt_accel_epsilon=float(self.get_parameter('zupt_accel_epsilon').value),
+            zupt_gyro_epsilon=float(self.get_parameter('zupt_gyro_epsilon').value),
             zupt_hold_sec=float(self.get_parameter('zupt_hold_sec').value),
             max_dt_sec=float(self.get_parameter('max_dt_sec').value),
             min_dt_sec=float(self.get_parameter('min_dt_sec').value),
