@@ -13,18 +13,14 @@ but create_map never sees a DDS publisher on /imu/data.
 
 from __future__ import annotations
 
-from typing import Optional
-
 import select
 import socket
-import struct
 import time
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
-
 
 from create_map.xrce_imu_cdr import try_parse_imu_cdr
 
