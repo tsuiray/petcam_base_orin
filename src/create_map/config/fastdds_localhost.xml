@@ -1,15 +1,8 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!--
-  PetCam Orin: Fast DDS Discovery Server CLIENT + UDPv4 only (no SHM).
-
-  micro_ros_agent (microros_ws) and system ROS 2 Humble often fail to
-  discover each other via simple multicast/SHM. Both sides connect to a
-  local Discovery Server instead.
-
-  Companion env:
-    ROS_DISCOVERY_SERVER=127.0.0.1:11811
-    FASTDDS_BUILTIN_TRANSPORTS=UDPv4
-    RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+  UDPv4 only (disable Shared Memory). Use SIMPLE discovery — do not require
+  a Discovery Server, so micro_ros_agent can bind XRCE UDP :8888 even if
+  fastdds tools are missing.
 -->
 <profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
   <transport_descriptors>
@@ -19,30 +12,12 @@
     </transport_descriptor>
   </transport_descriptors>
 
-  <participant profile_name="petcam_ds_client" is_default_profile="true">
+  <participant profile_name="petcam_udp_simple" is_default_profile="true">
     <rtps>
       <userTransports>
         <transport_id>udp_transport</transport_id>
       </userTransports>
       <useBuiltinTransports>false</useBuiltinTransports>
-      <builtin>
-        <discovery_config>
-          <discoveryProtocol>CLIENT</discoveryProtocol>
-          <discoveryServersList>
-            <!-- Default server GUID prefix for: fastdds discovery -i 0 -->
-            <RemoteServer prefix="44.53.00.5f.45.50.52.4f.53.49.4d.41">
-              <metatrafficUnicastLocatorList>
-                <locator>
-                  <udpv4>
-                    <address>127.0.0.1</address>
-                    <port>11811</port>
-                  </udpv4>
-                </locator>
-              </metatrafficUnicastLocatorList>
-            </RemoteServer>
-          </discoveryServersList>
-        </discovery_config>
-      </builtin>
     </rtps>
   </participant>
 </profiles>

@@ -1,7 +1,6 @@
-"""Launch create_map: discovery server + micro-ROS agent + odometry + map."""
+"""Launch create_map: micro-ROS agent first (ESP32 reachability), then nodes."""
 
 import os
-import shutil
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -39,110 +38,70 @@ def generate_launch_description():
     config = PathJoinSubstitution([pkg_share, 'config', 'create_map.yaml'])
     fastdds_xml_path = _find_fastdds_xml()
 
-    discovery_server = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
+    # Simple discovery + UDPv4. Discovery Server is NOT required for XRCE bind.
     dds_env = {
         'RMW_IMPLEMENTATION': 'rmw_fastrtps_cpp',
         'FASTDDS_BUILTIN_TRANSPORTS': 'UDPv4',
-        'ROS_DISCOVERY_SERVER': discovery_server,
         'ROS_LOCALHOST_ONLY': '0',
     }
     if fastdds_xml_path:
         dds_env['FASTRTPS_DEFAULT_PROFILES_FILE'] = fastdds_xml_path
 
-    env_actions = [
-        SetEnvironmentVariable(name=k, value=v) for k, v in dds_env.items()
-    ]
+    env_actions = [SetEnvironmentVariable(name=k, value=v) for k, v in dds_env.items()]
     env_actions.append(
         LogInfo(
             msg=(
-                '[petcam] DDS: Discovery Server '
-                f'{discovery_server} + UDPv4 (no SHM). XML={fastdds_xml_path or "none"}'
+                '[petcam] Agent binds XRCE UDP first; DDS=UDPv4 simple discovery. '
+                f'XML={fastdds_xml_path or "none"}'
             )
         )
     )
 
-    # Start Fast DDS Discovery Server if available (Humble: `fastdds discovery`)
-    fastdds_bin = shutil.which('fastdds')
-    discovery_actions = []
-    if fastdds_bin:
-        discovery_actions = [
-            LogInfo(msg=f'[petcam] Starting Fast DDS Discovery Server via {fastdds_bin}'),
-            ExecuteProcess(
-                cmd=[
-                    fastdds_bin,
-                    'discovery',
-                    '--server-id',
-                    '0',
-                    '--ip-address',
-                    '127.0.0.1',
-                    '--port',
-                    '11811',
-                ],
-                output='screen',
-                name='fastdds_discovery',
-            ),
-        ]
-    else:
-        discovery_actions = [
-            LogInfo(
-                msg=(
-                    '[petcam] WARNING: `fastdds` CLI not found. '
-                    'Install ros-humble-fastdds-tools OR rely on ROS_DISCOVERY_SERVER only. '
-                    'If /imu/data still missing, use: ./scripts/run_create_map_docker_agent.sh'
-                )
-            )
-        ]
-
     return LaunchDescription(
         env_actions
-        + discovery_actions
         + [
-            DeclareLaunchArgument(
-                'use_mock_imu',
-                default_value='false',
-                description='Publish synthetic IMU at 50 Hz for offline verify',
-            ),
-            DeclareLaunchArgument(
-                'start_microros_agent',
-                default_value='true',
-                description='Also start UDP micro-ROS agent for ESP32-S3',
-            ),
-            DeclareLaunchArgument(
-                'imu_topic',
-                default_value='/imu/data',
-                description='sensor_msgs/Imu topic from ESP32',
-            ),
-            DeclareLaunchArgument(
-                'port',
-                default_value='8888',
-                description='micro-ROS UDP port',
-            ),
-            DeclareLaunchArgument(
-                'enable_viewer',
-                default_value='true',
-                description='Open OpenCV live map window',
-            ),
+            DeclareLaunchArgument('use_mock_imu', default_value='false'),
+            DeclareLaunchArgument('start_microros_agent', default_value='true'),
+            DeclareLaunchArgument('imu_topic', default_value='/imu/data'),
+            DeclareLaunchArgument('port', default_value='8888'),
+            DeclareLaunchArgument('enable_viewer', default_value='true'),
             ExecuteProcess(cmd=['ros2', 'daemon', 'stop'], output='screen'),
-            # Delay agent slightly so discovery server is listening
+            # Start agent IMMEDIATELY so ESP32 can ping :8888
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution(
+                        [bringup_share, 'launch', 'microros_agent.launch.py']
+                    )
+                ),
+                condition=IfCondition(LaunchConfiguration('start_microros_agent')),
+                launch_arguments={
+                    'transport': 'udp4',
+                    'port': LaunchConfiguration('port'),
+                }.items(),
+            ),
             TimerAction(
-                period=1.0,
+                period=2.0,
                 actions=[
-                    IncludeLaunchDescription(
-                        PythonLaunchDescriptionSource(
-                            PathJoinSubstitution(
-                                [bringup_share, 'launch', 'microros_agent.launch.py']
-                            )
-                        ),
-                        condition=IfCondition(LaunchConfiguration('start_microros_agent')),
-                        launch_arguments={
-                            'transport': 'udp4',
-                            'port': LaunchConfiguration('port'),
-                        }.items(),
-                    ),
+                    ExecuteProcess(
+                        cmd=[
+                            'bash',
+                            '-lc',
+                            'P="${PETCAM_AGENT_PORT:-8888}"; '
+                            'if ss -uln 2>/dev/null | grep -E ":$P[[:space:]]" >/dev/null; then '
+                            '  echo "[petcam] OK: UDP $P is listening — ESP32 should reach agent"; '
+                            '  ss -ulnp 2>/dev/null | grep -E ":$P[[:space:]]" || true; '
+                            'else '
+                            '  echo "[petcam] ERROR: UDP $P NOT listening — ESP32 will say agent not reachable" >&2; '
+                            '  echo "[petcam] Fix: ./scripts/run_microros_agent.sh   or check install_microros_agent.sh" >&2; '
+                            'fi',
+                        ],
+                        additional_env={'PETCAM_AGENT_PORT': LaunchConfiguration('port')},
+                        output='screen',
+                    )
                 ],
             ),
             TimerAction(
-                period=1.5,
+                period=1.0,
                 actions=[
                     Node(
                         package='create_map',

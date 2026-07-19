@@ -1,7 +1,6 @@
-"""Launch micro-ROS Agent via ExecuteProcess (reliable env / DDS discovery)."""
+"""Launch micro-ROS Agent — prioritize XRCE UDP bind for ESP32 reachability."""
 
 import os
-import shutil
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, LogInfo, OpaqueFunction
@@ -16,13 +15,13 @@ def _build_agent(context, *args, **kwargs):
     verbose = LaunchConfiguration("verbose").perform(context)
 
     if transport == "serial":
-        agent_args = f"serial --dev {serial_dev} -b {serial_baud} -v{verbose}"
+        agent_cli = f"serial --dev {serial_dev} -b {serial_baud} -v{verbose}"
         summary = f"serial {serial_dev} @ {serial_baud}"
     elif transport in ("udp4", "udp"):
-        agent_args = f"udp4 --port {port} -v{verbose}"
-        summary = f"udp4 port {port}"
+        agent_cli = f"udp4 --port {port} -v{verbose}"
+        summary = f"udp4 port {port} (0.0.0.0)"
     elif transport in ("tcp4", "tcp"):
-        agent_args = f"tcp4 --port {port} -v{verbose}"
+        agent_cli = f"tcp4 --port {port} -v{verbose}"
         summary = f"tcp4 port {port}"
     else:
         raise RuntimeError(
@@ -32,37 +31,42 @@ def _build_agent(context, *args, **kwargs):
     ros_distro = os.environ.get("ROS_DISTRO", "humble")
     microros_ws = os.environ.get("MICROROS_WS", os.path.expanduser("~/microros_ws"))
     fastdds_xml = os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE", "")
-    discovery = os.environ.get("ROS_DISCOVERY_SERVER", "127.0.0.1:11811")
 
-    # Prefer `ros2 run` after sourcing microros_ws so agent + ROS share one env.
-    cmd = (
-        "set -e; "
-        f"source /opt/ros/{ros_distro}/setup.bash; "
-        f"if [ -f '{microros_ws}/install/local_setup.bash' ]; then "
-        f"  source '{microros_ws}/install/local_setup.bash'; "
-        "fi; "
-        "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp; "
-        "export FASTDDS_BUILTIN_TRANSPORTS=UDPv4; "
-        f"export ROS_DISCOVERY_SERVER='{discovery}'; "
-        "export ROS_LOCALHOST_ONLY=0; "
-        f"if [ -n '{fastdds_xml}' ] && [ -f '{fastdds_xml}' ]; then "
-        f"  export FASTRTPS_DEFAULT_PROFILES_FILE='{fastdds_xml}'; "
-        "fi; "
-        "echo \"[petcam] micro_ros_agent env: "
-        "RMW=$RMW_IMPLEMENTATION DDS=$FASTDDS_BUILTIN_TRANSPORTS "
-        "DISCOVERY=$ROS_DISCOVERY_SERVER XML=${FASTRTPS_DEFAULT_PROFILES_FILE:-none}\"; "
-        f"exec ros2 run micro_ros_agent micro_ros_agent {agent_args}"
-    )
+    # IMPORTANT: do NOT require ROS_DISCOVERY_SERVER here.
+    # If DDS client mode cannot reach a discovery server, agent init can fail
+    # and never bind XRCE :8888 → ESP32 reports "agent not reachable".
+    cmd = f"""
+set -euo pipefail
+source /opt/ros/{ros_distro}/setup.bash
+if [ -f "{microros_ws}/install/local_setup.bash" ]; then
+  source "{microros_ws}/install/local_setup.bash"
+fi
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+unset ROS_DISCOVERY_SERVER || true
+if [ -n "{fastdds_xml}" ] && [ -f "{fastdds_xml}" ]; then
+  export FASTRTPS_DEFAULT_PROFILES_FILE="{fastdds_xml}"
+fi
+echo "[petcam] Starting micro_ros_agent {summary}"
+echo "[petcam] MICROROS_WS={microros_ws}"
+if ! ros2 pkg prefix micro_ros_agent >/dev/null 2>&1; then
+  echo "[petcam] ERROR: micro_ros_agent not found. Run scripts/install_microros_agent.sh" >&2
+  exit 1
+fi
+# Free stale listener on the XRCE port (UDP)
+if command -v fuser >/dev/null 2>&1; then
+  fuser -k {port}/udp 2>/dev/null || true
+fi
+exec ros2 run micro_ros_agent micro_ros_agent {agent_cli}
+"""
 
-    which = shutil.which("ros2") or "ros2"
     return [
-        LogInfo(msg=f"[petcam] Starting micro_ros_agent ({summary}) via ExecuteProcess"),
+        LogInfo(msg=f"[petcam] micro_ros_agent launch: {summary}"),
         ExecuteProcess(
             cmd=["bash", "-lc", cmd],
             output="screen",
             name="micro_ros_agent",
         ),
-        LogInfo(msg=f"[petcam] ros2 binary resolved near launch host: {which}"),
     ]
 
 

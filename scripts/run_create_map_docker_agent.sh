@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Recommended bring-up when native agent DDS discovery fails on Orin:
-#   1) Docker micro-ros-agent (host network) — matches ESP32 README
-#   2) create_map without starting a second native agent
+# Docker micro-ros-agent on :8888 (ESP32 must reach Orin Wi-Fi IP), then create_map.
 set -euo pipefail
 
 ROS_DISTRO="${ROS_DISTRO:-humble}"
@@ -9,31 +7,21 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UDP_PORT="${UDP_PORT:-8888}"
 MICROROS_IMAGE="${MICROROS_IMAGE:-microros/micro-ros-agent:humble}"
 
-echo "==> Stopping leftover agents on :${UDP_PORT} (best effort)"
+echo "==> Orin IPs (ESP32 MICROROS_AGENT_IP = Wi-Fi IP):"
+ip -4 addr show scope global | sed -n 's/.*inet \([0-9.]*\).*/  \1/p' || true
+
+echo "==> Restart Docker micro-ros-agent on UDP ${UDP_PORT}"
 pkill -f "micro_ros_agent.*udp4" 2>/dev/null || true
 docker rm -f petcam_microros_agent 2>/dev/null || true
 
-echo "==> Starting Docker micro-ros-agent (${MICROROS_IMAGE}) udp4:${UDP_PORT}"
-echo "    Keep this container running. ESP32 MICROROS_AGENT_IP must be this Orin Wi-Fi IP."
 docker run -d --name petcam_microros_agent --net=host --ipc=host \
   -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
   -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
-  -e ROS_DISCOVERY_SERVER=127.0.0.1:11811 \
   "${MICROROS_IMAGE}" udp4 --port "${UDP_PORT}" -v6
 
-# Discovery server on host for create_map <-> docker agent
-if command -v fastdds >/dev/null 2>&1; then
-  if ! pgrep -f "fastdds discovery" >/dev/null 2>&1; then
-    echo "==> Starting fastdds discovery server on 127.0.0.1:11811"
-    fastdds discovery --server-id 0 --ip-address 127.0.0.1 --port 11811 \
-      >/tmp/petcam_fastdds_discovery.log 2>&1 &
-    sleep 1
-  fi
-else
-  echo "==> WARNING: fastdds CLI missing (sudo apt install ros-${ROS_DISTRO}-fastdds-tools)"
-fi
+sleep 2
+"${REPO_ROOT}/scripts/check_agent_reachable.sh" "${UDP_PORT}"
 
-echo "==> Launching create_map WITHOUT native agent"
-export ROS_DISCOVERY_SERVER=127.0.0.1:11811
-export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+echo "==> create_map without native agent (docker owns :${UDP_PORT})"
+unset ROS_DISCOVERY_SERVER || true
 exec "${REPO_ROOT}/scripts/run_create_map.sh" start_microros_agent:=false "$@"

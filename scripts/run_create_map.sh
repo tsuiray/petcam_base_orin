@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch create_map (discovery server + UDP micro-ROS agent + map).
+# Launch create_map. Ensures micro-ROS agent can bind UDP :8888 for ESP32.
 set -euo pipefail
 
 ROS_DISTRO="${ROS_DISTRO:-humble}"
@@ -25,34 +25,37 @@ if [[ ! -f "${REPO_ROOT}/install/local_setup.bash" ]]; then
 fi
 petcam_source "${REPO_ROOT}/install/local_setup.bash"
 
-# Optional but recommended for Discovery Server CLI
-if ! command -v fastdds >/dev/null 2>&1; then
-  echo "==> Installing ros-${ROS_DISTRO}-fastdds-tools (for discovery server)..."
-  sudo apt-get update -qq && sudo apt-get install -y "ros-${ROS_DISTRO}-fastdds-tools" || true
+if ! ros2 pkg prefix micro_ros_agent >/dev/null 2>&1; then
+  echo "ERROR: micro_ros_agent not found. Run: ./scripts/install_microros_agent.sh"
+  exit 1
 fi
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
-export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
-export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
-export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
-export ROS_DISCOVERY_SERVER="${ROS_DISCOVERY_SERVER:-127.0.0.1:11811}"
+export ROS_LOCALHOST_ONLY=0
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
 export MICROROS_WS
+# Critical: Discovery Server mode can prevent agent from binding XRCE :8888
+unset ROS_DISCOVERY_SERVER || true
 
 FASTDDS_XML="${REPO_ROOT}/install/create_map/share/create_map/config/fastdds_localhost.xml"
 if [[ ! -f "${FASTDDS_XML}" ]]; then
   FASTDDS_XML="${REPO_ROOT}/src/create_map/config/fastdds_localhost.xml"
 fi
 if [[ -f "${FASTDDS_XML}" ]]; then
-  export FASTRTPS_DEFAULT_PROFILES_FILE="${FASTRTPS_DEFAULT_PROFILES_FILE:-${FASTDDS_XML}}"
+  export FASTRTPS_DEFAULT_PROFILES_FILE="${FASTDDS_XML}"
 fi
 
 ros2 daemon stop >/dev/null 2>&1 || true
 
-echo "==> ESP32 contract: /imu/data @ UDP:8888"
-echo "==> ROS_DISCOVERY_SERVER=${ROS_DISCOVERY_SERVER}"
-echo "==> FASTDDS_BUILTIN_TRANSPORTS=${FASTDDS_BUILTIN_TRANSPORTS}"
-echo "==> FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE:-}"
-echo "==> If /imu/data still missing after ESP32 connects, try:"
-echo "      ./scripts/run_create_map_docker_agent.sh"
+# Free UDP 8888 if a dead agent holds it
+if command -v fuser >/dev/null 2>&1; then
+  fuser -k 8888/udp 2>/dev/null || true
+fi
+
+echo "==> Orin IPs (ESP32 MICROROS_AGENT_IP must match Wi-Fi IP):"
+ip -4 addr show scope global | sed -n 's/.*inet \([0-9.]*\).*/  \1/p' || true
+echo "==> FASTDDS_BUILTIN_TRANSPORTS=${FASTDDS_BUILTIN_TRANSPORTS} (ROS_DISCOVERY_SERVER unset)"
+echo "==> Starting create_map (agent + odometry + map)..."
 
 exec ros2 launch create_map create_map.launch.py "$@"
