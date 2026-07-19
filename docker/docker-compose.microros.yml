@@ -1,21 +1,23 @@
-# Optional: run micro-ROS Agent via Docker on the Orin.
-# Useful on JetPack 5 / Ubuntu 20.04, or when you prefer not to build from source.
+# Optional: run micro-ROS Agent via Docker on the Orin (host network).
+# Prefer: ./scripts/run_create_map_docker_agent.sh
 #
-# UDP (ESP32 default — WiFi client -> Orin:8888):
+# Manual:
 #   docker compose -f docker/docker-compose.microros.yml --profile udp up
 #
-# Serial USB fallback:
-#   docker compose -f docker/docker-compose.microros.yml --profile serial up
-#
-# Note: official microros images are often amd64; on Orin (arm64) prefer the
-# native install scripts, or build docker/Dockerfile.microros locally.
+# Then in another shell:
+#   ./scripts/run_create_map.sh start_microros_agent:=false
 
 services:
   microros-agent-serial:
     profiles: ["serial"]
     image: ${MICROROS_IMAGE:-microros/micro-ros-agent:humble}
     network_mode: host
+    ipc: host
     privileged: true
+    environment:
+      FASTDDS_BUILTIN_TRANSPORTS: UDPv4
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      ROS_DISCOVERY_SERVER: ${ROS_DISCOVERY_SERVER:-127.0.0.1:11811}
     devices:
       - ${SERIAL_DEV:-/dev/ttyACM0}:${SERIAL_DEV:-/dev/ttyACM0}
     command: >
@@ -28,5 +30,10 @@ services:
     profiles: ["udp"]
     image: ${MICROROS_IMAGE:-microros/micro-ros-agent:humble}
     network_mode: host
+    ipc: host
+    environment:
+      FASTDDS_BUILTIN_TRANSPORTS: UDPv4
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      ROS_DISCOVERY_SERVER: ${ROS_DISCOVERY_SERVER:-127.0.0.1:11811}
     command: udp4 --port ${UDP_PORT:-8888} -v6
     restart: unless-stopped

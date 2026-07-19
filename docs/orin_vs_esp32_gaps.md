@@ -18,25 +18,28 @@ So create_map’s topic/type/units were already correct.
 ## What was missing on Orin (root cause of your symptoms)
 
 ```
-ESP32  --XRCE/UDP-->  micro_ros_agent  --DDS/SHM?-->  imu_odometry / ros2 CLI
-         works (hex)                      BROKEN
+ESP32  --XRCE/UDP-->  micro_ros_agent  --DDS discovery?-->  imu_odometry / ros2 CLI
+         works (hex)        publisher not visible in ROS graph
 ```
 
-1. **Fast DDS Shared Memory bridge**  
-   Agent (from `~/microros_ws`) and system ROS 2 Humble nodes often **cannot share SHM**.  
-   Symptom: agent `-v6` hex dumps IMU, but `/create_map/debug` stays all zeros (`status=0`) and `ros2 topic hz /imu/data` fails.
+`imu_odometry` warning **No DDS publisher on /imu/data** means the agent never
+appears in the same Fast DDS graph as create_map (not an ESP32 message bug).
 
-2. **Fix now in this repo**  
-   - `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` for agent + create_map (disable SHM)  
-   - Fast DDS XML UDP-only profile  
-   - `ros2 daemon stop` before launch  
-   - Dual QoS subscriptions on `/imu/data`
+### Fix in this repo
+1. Local **Fast DDS Discovery Server** (`127.0.0.1:11811`)
+2. `ROS_DISCOVERY_SERVER` + `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` (no SHM)
+3. Agent started via `ExecuteProcess` with the same env
+4. Fallback: **Docker agent** (ESP32 README style)
 
-3. **Operational checklist**  
-   - Only **one** agent on UDP 8888 (no leftover docker agent)  
-   - ESP32 `MICROROS_AGENT_IP` = Orin Wi‑Fi IP  
-   - Same `ROS_DOMAIN_ID` (default `0`)  
-   - After pull: `./scripts/build_petcam_ws.sh && ./scripts/run_create_map.sh`
+```bash
+git pull && ./scripts/build_petcam_ws.sh
+
+# Preferred
+./scripts/run_create_map.sh
+
+# If still "No DDS publisher on /imu/data":
+./scripts/run_create_map_docker_agent.sh
+```
 
 ## Verify
 

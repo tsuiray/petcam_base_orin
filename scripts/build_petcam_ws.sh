@@ -20,8 +20,10 @@ if [[ -f "${MICROROS_WS}/install/local_setup.bash" ]]; then
 fi
 
 cd "${REPO_ROOT}"
-# OpenCV for create_map live viewer (apt name on Ubuntu 22.04)
-sudo apt-get install -y python3-opencv python3-numpy 2>/dev/null || true
+# Optional tools for create_map live viewer + Fast DDS discovery server
+sudo apt-get install -y python3-opencv python3-numpy \
+  "ros-${ROS_DISTRO}-fastdds-tools" 2>/dev/null || \
+  sudo apt-get install -y python3-opencv python3-numpy 2>/dev/null || true
 rosdep install --from-paths src --ignore-src -y --rosdistro "${ROS_DISTRO}" || true
 colcon build --symlink-install
 

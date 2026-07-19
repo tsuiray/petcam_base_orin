@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch create_map (UDP micro-ROS agent + IMU odometry + map viewer).
+# Launch create_map (discovery server + UDP micro-ROS agent + map).
 set -euo pipefail
 
 ROS_DISTRO="${ROS_DISTRO:-humble}"
@@ -25,13 +25,18 @@ if [[ ! -f "${REPO_ROOT}/install/local_setup.bash" ]]; then
 fi
 petcam_source "${REPO_ROOT}/install/local_setup.bash"
 
-# --- Match ESP32 firmware (cursor/esp32-arduino-hardening-26d4) ---
-# ESP32: WiFi UDP → Orin:8888 → micro_ros_agent → /imu/data
-# Gap that broke create_map: agent XRCE OK but DDS SHM blocked ROS2 nodes.
+# Optional but recommended for Discovery Server CLI
+if ! command -v fastdds >/dev/null 2>&1; then
+  echo "==> Installing ros-${ROS_DISTRO}-fastdds-tools (for discovery server)..."
+  sudo apt-get update -qq && sudo apt-get install -y "ros-${ROS_DISTRO}-fastdds-tools" || true
+fi
+
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
 export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
+export ROS_DISCOVERY_SERVER="${ROS_DISCOVERY_SERVER:-127.0.0.1:11811}"
+export MICROROS_WS
 
 FASTDDS_XML="${REPO_ROOT}/install/create_map/share/create_map/config/fastdds_localhost.xml"
 if [[ ! -f "${FASTDDS_XML}" ]]; then
@@ -41,13 +46,13 @@ if [[ -f "${FASTDDS_XML}" ]]; then
   export FASTRTPS_DEFAULT_PROFILES_FILE="${FASTRTPS_DEFAULT_PROFILES_FILE:-${FASTDDS_XML}}"
 fi
 
-# Stale daemon graph often hides micro-ROS topics
 ros2 daemon stop >/dev/null 2>&1 || true
 
-echo "==> ESP32 contract: /imu/data sensor_msgs/Imu BEST_EFFORT 50Hz UDP:8888"
-echo "==> ROS_DOMAIN_ID=${ROS_DOMAIN_ID} RMW=${RMW_IMPLEMENTATION}"
-echo "==> FASTDDS_BUILTIN_TRANSPORTS=${FASTDDS_BUILTIN_TRANSPORTS} (SHM disabled)"
+echo "==> ESP32 contract: /imu/data @ UDP:8888"
+echo "==> ROS_DISCOVERY_SERVER=${ROS_DISCOVERY_SERVER}"
+echo "==> FASTDDS_BUILTIN_TRANSPORTS=${FASTDDS_BUILTIN_TRANSPORTS}"
 echo "==> FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE:-}"
-echo "==> Tip: kill any other micro-ros-agent / docker agent on :8888 first"
+echo "==> If /imu/data still missing after ESP32 connects, try:"
+echo "      ./scripts/run_create_map_docker_agent.sh"
 
 exec ros2 launch create_map create_map.launch.py "$@"

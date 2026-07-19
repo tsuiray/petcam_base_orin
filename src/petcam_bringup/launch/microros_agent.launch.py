@@ -1,9 +1,11 @@
-"""Launch micro-ROS Agent on the PetCam Orin base station for ESP32-S3."""
+"""Launch micro-ROS Agent via ExecuteProcess (reliable env / DDS discovery)."""
+
+import os
+import shutil
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
 
 
 def _build_agent(context, *args, **kwargs):
@@ -14,43 +16,53 @@ def _build_agent(context, *args, **kwargs):
     verbose = LaunchConfiguration("verbose").perform(context)
 
     if transport == "serial":
-        agent_args = [
-            "serial",
-            "--dev",
-            serial_dev,
-            "-b",
-            serial_baud,
-            f"-v{verbose}",
-        ]
+        agent_args = f"serial --dev {serial_dev} -b {serial_baud} -v{verbose}"
         summary = f"serial {serial_dev} @ {serial_baud}"
     elif transport in ("udp4", "udp"):
-        agent_args = ["udp4", "--port", port, f"-v{verbose}"]
+        agent_args = f"udp4 --port {port} -v{verbose}"
         summary = f"udp4 port {port}"
     elif transport in ("tcp4", "tcp"):
-        agent_args = ["tcp4", "--port", port, f"-v{verbose}"]
+        agent_args = f"tcp4 --port {port} -v{verbose}"
         summary = f"tcp4 port {port}"
     else:
         raise RuntimeError(
             f"Unsupported transport '{transport}'. Use serial, udp4, or tcp4."
         )
 
-    # Force UDPv4 DDS (no SHM): agent binary from microros_ws often cannot
-    # share SHM with system ROS 2 nodes — XRCE works, /imu/data invisible.
-    agent_env = {
-        "FASTDDS_BUILTIN_TRANSPORTS": "UDPv4",
-        "RMW_IMPLEMENTATION": "rmw_fastrtps_cpp",
-    }
+    ros_distro = os.environ.get("ROS_DISTRO", "humble")
+    microros_ws = os.environ.get("MICROROS_WS", os.path.expanduser("~/microros_ws"))
+    fastdds_xml = os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE", "")
+    discovery = os.environ.get("ROS_DISCOVERY_SERVER", "127.0.0.1:11811")
 
+    # Prefer `ros2 run` after sourcing microros_ws so agent + ROS share one env.
+    cmd = (
+        "set -e; "
+        f"source /opt/ros/{ros_distro}/setup.bash; "
+        f"if [ -f '{microros_ws}/install/local_setup.bash' ]; then "
+        f"  source '{microros_ws}/install/local_setup.bash'; "
+        "fi; "
+        "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp; "
+        "export FASTDDS_BUILTIN_TRANSPORTS=UDPv4; "
+        f"export ROS_DISCOVERY_SERVER='{discovery}'; "
+        "export ROS_LOCALHOST_ONLY=0; "
+        f"if [ -n '{fastdds_xml}' ] && [ -f '{fastdds_xml}' ]; then "
+        f"  export FASTRTPS_DEFAULT_PROFILES_FILE='{fastdds_xml}'; "
+        "fi; "
+        "echo \"[petcam] micro_ros_agent env: "
+        "RMW=$RMW_IMPLEMENTATION DDS=$FASTDDS_BUILTIN_TRANSPORTS "
+        "DISCOVERY=$ROS_DISCOVERY_SERVER XML=${FASTRTPS_DEFAULT_PROFILES_FILE:-none}\"; "
+        f"exec ros2 run micro_ros_agent micro_ros_agent {agent_args}"
+    )
+
+    which = shutil.which("ros2") or "ros2"
     return [
-        LogInfo(msg=f"[petcam] Starting micro_ros_agent ({summary}) [DDS=UDPv4]"),
-        Node(
-            package="micro_ros_agent",
-            executable="micro_ros_agent",
-            name="micro_ros_agent",
+        LogInfo(msg=f"[petcam] Starting micro_ros_agent ({summary}) via ExecuteProcess"),
+        ExecuteProcess(
+            cmd=["bash", "-lc", cmd],
             output="screen",
-            arguments=agent_args,
-            additional_env=agent_env,
+            name="micro_ros_agent",
         ),
+        LogInfo(msg=f"[petcam] ros2 binary resolved near launch host: {which}"),
     ]
 
 
