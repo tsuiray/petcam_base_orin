@@ -1,0 +1,21 @@
+[Unit]
+Description=PetCam micro-ROS Agent (Orin base station <-> ESP32-S3)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=REPLACE_ME
+Environment=ROS_DISTRO=humble
+Environment=TRANSPORT=udp4
+Environment=SERIAL_DEV=/dev/ttyACM0
+Environment=SERIAL_BAUD=115200
+Environment=PORT=8888
+Environment=VERBOSE=4
+# Adjust path to where you cloned this repo on the Orin:
+ExecStart=/home/REPLACE_ME/petcam_base_orin/scripts/run_microros_agent.sh
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

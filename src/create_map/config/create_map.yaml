@@ -1,0 +1,68 @@
+# create_map — Orin base station IMU path mapping
+#
+# ESP32 firmware (SIM L-home ~500 sq ft):
+#   repo:   https://github.com/tsuiray/petcam_esp32_s3
+#   branch: main  (imu_sim.cpp — NOT hardening-26d4)
+#   topic:  /imu/data  BEST_EFFORT 50 Hz (20 ms/sample)
+#   SIM:    world-frame ax/ay, az=0, closed L polygon
+#   REAL:   body-frame MPU6050 (+ gravity on z)
+
+imu_odometry:
+  ros__parameters:
+    imu_topic: "/imu/data"
+    raw_imu_topic: "/imu/raw"
+    prefer_raw: false
+
+    # Default matches ESP32 board_config IMU_DATA_MODE_SIM
+    imu_mode: "sim"
+    accel_frame: "world"
+    use_fixed_dt: true
+    default_dt_sec: 0.02
+    use_receive_time: true
+    calibrate_on_start_sec: 0.0
+
+    frame_id: "map"
+    child_frame_id: "base_link"
+
+    max_dt_sec: 0.05
+    min_dt_sec: 0.0001
+
+    accel_in_g: false
+    gravity: 9.80665
+
+    # SIM: dead_reckon snaps v=0 only on a≈0 settle markers (not this epsilon).
+    # REAL: uses these thresholds with gravity check.
+    enable_zupt: true
+    zupt_accel_epsilon: 0.45
+    zupt_gyro_epsilon: 0.15
+    zupt_hold_sec: 0.35
+
+    path_max_poses: 5000
+    path_min_step_m: 0.0005
+    publish_tf: true
+
+    # SIM: wait for a≈0 before integrating; soft snap near origin each lap
+    sim_wait_settle: true
+    sim_snap_lap: true
+    sim_lap_min_dist_m: 20.0
+    sim_origin_eps_m: 0.35
+    log_rx_first_n: 5
+    log_rx_every_n: 25
+
+map_viewer:
+  ros__parameters:
+    path_topic: "/create_map/path"
+    pose_topic: "/create_map/pose"
+    distance_topic: "/create_map/distance"
+    debug_topic: "/create_map/debug"
+    window_name: "PetCam create_map"
+    pixels_per_meter: 40.0
+    trail_thickness: 3
+    show_grid: true
+    grid_spacing_m: 1.0
+
+mock_imu:
+  ros__parameters:
+    imu_topic: "/imu/data"
+    rate_hz: 50.0
+    accel_peak: 0.4

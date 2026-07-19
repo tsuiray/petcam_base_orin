@@ -1,0 +1,39 @@
+# Optional: run micro-ROS Agent via Docker on the Orin (host network).
+# Prefer: ./scripts/run_create_map_docker_agent.sh
+#
+# Manual:
+#   docker compose -f docker/docker-compose.microros.yml --profile udp up
+#
+# Then in another shell:
+#   ./scripts/run_create_map.sh start_microros_agent:=false
+
+services:
+  microros-agent-serial:
+    profiles: ["serial"]
+    image: ${MICROROS_IMAGE:-microros/micro-ros-agent:humble}
+    network_mode: host
+    ipc: host
+    privileged: true
+    environment:
+      FASTDDS_BUILTIN_TRANSPORTS: UDPv4
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      ROS_DISCOVERY_SERVER: ${ROS_DISCOVERY_SERVER:-127.0.0.1:11811}
+    devices:
+      - ${SERIAL_DEV:-/dev/ttyACM0}:${SERIAL_DEV:-/dev/ttyACM0}
+    command: >
+      serial --dev ${SERIAL_DEV:-/dev/ttyACM0}
+      -b ${SERIAL_BAUD:-115200}
+      -v6
+    restart: unless-stopped
+
+  microros-agent-udp:
+    profiles: ["udp"]
+    image: ${MICROROS_IMAGE:-microros/micro-ros-agent:humble}
+    network_mode: host
+    ipc: host
+    environment:
+      FASTDDS_BUILTIN_TRANSPORTS: UDPv4
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      ROS_DISCOVERY_SERVER: ${ROS_DISCOVERY_SERVER:-127.0.0.1:11811}
+    command: udp4 --port ${UDP_PORT:-8888} -v6
+    restart: unless-stopped

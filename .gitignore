@@ -1,0 +1,21 @@
+# colcon / ROS
+build/
+install/
+log/
+.local/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# micro-ROS side workspace (lives under $HOME by default)
+microros_ws/
