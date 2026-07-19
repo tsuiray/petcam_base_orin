@@ -12,7 +12,7 @@ import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 from rclpy.node import Node
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Float64MultiArray
 
 
 class MapViewerNode(Node):
@@ -22,15 +22,17 @@ class MapViewerNode(Node):
         self.declare_parameter('path_topic', '/create_map/path')
         self.declare_parameter('pose_topic', '/create_map/pose')
         self.declare_parameter('distance_topic', '/create_map/distance')
+        self.declare_parameter('debug_topic', '/create_map/debug')
         self.declare_parameter('window_name', 'PetCam create_map')
-        self.declare_parameter('pixels_per_meter', 80.0)
-        self.declare_parameter('trail_thickness', 2)
+        self.declare_parameter('pixels_per_meter', 200.0)
+        self.declare_parameter('trail_thickness', 3)
         self.declare_parameter('show_grid', True)
-        self.declare_parameter('grid_spacing_m', 0.5)
+        self.declare_parameter('grid_spacing_m', 0.25)
         self.declare_parameter('canvas_size', 800)
 
         self.window_name = str(self.get_parameter('window_name').value)
         self.ppm = float(self.get_parameter('pixels_per_meter').value)
+        self.base_ppm = self.ppm
         self.trail_thickness = int(self.get_parameter('trail_thickness').value)
         self.show_grid = bool(self.get_parameter('show_grid').value)
         self.grid_spacing_m = float(self.get_parameter('grid_spacing_m').value)
@@ -39,6 +41,7 @@ class MapViewerNode(Node):
         self._path_xy: List[Tuple[float, float]] = []
         self._pose: Optional[PoseStamped] = None
         self._distance_m = 0.0
+        self._debug = [0.0] * 12
 
         self.create_subscription(
             Path, self.get_parameter('path_topic').value, self._on_path, 10
@@ -48,6 +51,9 @@ class MapViewerNode(Node):
         )
         self.create_subscription(
             Float32, self.get_parameter('distance_topic').value, self._on_distance, 10
+        )
+        self.create_subscription(
+            Float64MultiArray, self.get_parameter('debug_topic').value, self._on_debug, 10
         )
 
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
@@ -64,6 +70,10 @@ class MapViewerNode(Node):
     def _on_distance(self, msg: Float32) -> None:
         self._distance_m = float(msg.data)
 
+    def _on_debug(self, msg: Float64MultiArray) -> None:
+        if msg.data:
+            self._debug = list(msg.data)
+
     def _world_to_pixel(self, x: float, y: float, origin: Tuple[int, int]) -> Tuple[int, int]:
         ox, oy = origin
         px = int(ox + x * self.ppm)
@@ -74,16 +84,17 @@ class MapViewerNode(Node):
         img = np.full((self.canvas_size, self.canvas_size, 3), 30, dtype=np.uint8)
         origin = (self.canvas_size // 2, self.canvas_size // 2)
 
-        # Auto-center on path centroid if far from origin
+        # Auto zoom/center so small IMU paths are visible
         if self._path_xy:
             xs = [p[0] for p in self._path_xy]
             ys = [p[1] for p in self._path_xy]
-            cx = 0.5 * (min(xs) + max(xs))
-            cy = 0.5 * (min(ys) + max(ys))
-            span = max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
-            # Keep ppm unless path is huge
-            if span * self.ppm > self.canvas_size * 0.85:
-                self.ppm = (self.canvas_size * 0.8) / span
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            cx = 0.5 * (min_x + max_x)
+            cy = 0.5 * (min_y + max_y)
+            span = max(max_x - min_x, max_y - min_y, 0.05)
+            # Fit path into ~70% of canvas; allow zoom-in for cm-scale motion
+            self.ppm = float(np.clip((self.canvas_size * 0.7) / span, 40.0, 2500.0))
             origin = (
                 int(self.canvas_size / 2 - cx * self.ppm),
                 int(self.canvas_size / 2 + cy * self.ppm),
@@ -96,7 +107,6 @@ class MapViewerNode(Node):
             for y in range(origin[1] % spacing_px, self.canvas_size, spacing_px):
                 cv2.line(img, (0, y), (self.canvas_size, y), (45, 45, 45), 1)
 
-        # Axes
         cv2.arrowedLine(
             img, origin, (origin[0] + 40, origin[1]), (80, 80, 200), 2, tipLength=0.3
         )
@@ -106,12 +116,20 @@ class MapViewerNode(Node):
         cv2.putText(img, 'X', (origin[0] + 44, origin[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (80, 80, 200), 1)
         cv2.putText(img, 'Y', (origin[0] + 4, origin[1] - 44), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (80, 200, 80), 1)
 
-        if len(self._path_xy) >= 2:
+        unique_span = 0.0
+        if self._path_xy:
+            xs = [p[0] for p in self._path_xy]
+            ys = [p[1] for p in self._path_xy]
+            unique_span = max(max(xs) - min(xs), max(ys) - min(ys))
+
+        if len(self._path_xy) >= 2 and unique_span > 1e-4:
             pts = np.array(
                 [self._world_to_pixel(x, y, origin) for x, y in self._path_xy],
                 dtype=np.int32,
             )
             cv2.polylines(img, [pts], False, (0, 200, 255), self.trail_thickness, cv2.LINE_AA)
+            # Mark start
+            cv2.circle(img, tuple(pts[0]), 5, (255, 180, 80), -1, cv2.LINE_AA)
 
         if self._pose is not None:
             x = self._pose.pose.position.x
@@ -122,26 +140,43 @@ class MapViewerNode(Node):
                 1.0 - 2.0 * (q.y * q.y + q.z * q.z),
             )
             px, py = self._world_to_pixel(x, y, origin)
-            cv2.circle(img, (px, py), 6, (0, 255, 120), -1, cv2.LINE_AA)
-            hx = int(px + 18 * math.cos(yaw))
-            hy = int(py - 18 * math.sin(yaw))
+            cv2.circle(img, (px, py), 7, (0, 255, 120), -1, cv2.LINE_AA)
+            hx = int(px + 20 * math.cos(yaw))
+            hy = int(py - 20 * math.sin(yaw))
             cv2.arrowedLine(img, (px, py), (hx, hy), (0, 255, 120), 2, tipLength=0.35)
+
+        dt_ms = self._debug[0] * 1000.0 if len(self._debug) > 0 else 0.0
+        ax_b = self._debug[1] if len(self._debug) > 1 else 0.0
+        ay_b = self._debug[2] if len(self._debug) > 2 else 0.0
+        vx = self._debug[5] if len(self._debug) > 5 else 0.0
+        vy = self._debug[6] if len(self._debug) > 6 else 0.0
+        zupt = self._debug[7] >= 0.5 if len(self._debug) > 7 else False
+        still = self._debug[8] if len(self._debug) > 8 else 0.0
+
+        hint = 'MOVE / shake robot to draw path'
+        if self._distance_m < 0.005 and unique_span < 0.005:
+            hint = 'No motion yet — push robot (keep still 1s at start for calib)'
+        elif zupt:
+            hint = 'ZUPT on (stationary) — move to continue path'
 
         hud = [
             'PetCam create_map',
             f'distance: {self._distance_m:.3f} m',
-            f'points: {len(self._path_xy)}',
+            f'path pts: {len(self._path_xy)}  span: {unique_span*100:.1f} cm',
+            f'dt: {dt_ms:.1f} ms  v: ({vx:.2f},{vy:.2f}) m/s',
+            f'a_xy: ({ax_b:.2f},{ay_b:.2f})  zupt: {"ON" if zupt else "off"} still:{still:.2f}s',
             f'scale: {self.ppm:.0f} px/m',
-            'q = quit window focus',
+            hint,
         ]
         for i, line in enumerate(hud):
+            color = (80, 220, 255) if i == len(hud) - 1 else (220, 220, 220)
             cv2.putText(
                 img,
                 line,
                 (12, 24 + i * 22),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (220, 220, 220),
+                0.52,
+                color,
                 1,
                 cv2.LINE_AA,
             )

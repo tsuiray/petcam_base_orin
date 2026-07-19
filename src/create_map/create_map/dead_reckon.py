@@ -29,6 +29,15 @@ class OdomState:
     vy: float = 0.0
     path_xy: List[Tuple[float, float]] = field(default_factory=list)
     distance_m: float = 0.0
+    # Debug / HUD fields (last sample)
+    dt: float = 0.0
+    ax_body: float = 0.0
+    ay_body: float = 0.0
+    ax_world: float = 0.0
+    ay_world: float = 0.0
+    zupt_active: bool = False
+    still_sec: float = 0.0
+    path_appended: bool = False
 
 
 class ImuDeadReckoner:
@@ -40,11 +49,13 @@ class ImuDeadReckoner:
         gravity: float = 9.80665,
         accel_in_g: bool = False,
         enable_zupt: bool = True,
-        zupt_accel_epsilon: float = 0.35,
-        zupt_gyro_epsilon: float = 0.08,
+        zupt_accel_epsilon: float = 0.45,
+        zupt_gyro_epsilon: float = 0.15,
+        zupt_hold_sec: float = 0.35,
         max_dt_sec: float = 0.1,
         min_dt_sec: float = 0.001,
         path_max_poses: int = 5000,
+        path_min_step_m: float = 0.002,
         calibrate_on_start_sec: float = 1.0,
     ) -> None:
         self.gravity = gravity
@@ -52,9 +63,11 @@ class ImuDeadReckoner:
         self.enable_zupt = enable_zupt
         self.zupt_accel_epsilon = zupt_accel_epsilon
         self.zupt_gyro_epsilon = zupt_gyro_epsilon
+        self.zupt_hold_sec = zupt_hold_sec
         self.max_dt_sec = max_dt_sec
         self.min_dt_sec = min_dt_sec
         self.path_max_poses = path_max_poses
+        self.path_min_step_m = path_min_step_m
         self.calibrate_on_start_sec = calibrate_on_start_sec
 
         self.state = OdomState()
@@ -64,6 +77,7 @@ class ImuDeadReckoner:
         self._calib_samples: List[Tuple[float, float]] = []
         self._calib_start: Optional[float] = None
         self._calibrated = calibrate_on_start_sec <= 0.0
+        self._still_sec = 0.0
 
     def reset(self) -> None:
         self.state = OdomState()
@@ -73,6 +87,7 @@ class ImuDeadReckoner:
         self._calib_samples.clear()
         self._calib_start = None
         self._calibrated = self.calibrate_on_start_sec <= 0.0
+        self._still_sec = 0.0
 
     def update(self, sample: ImuSample) -> Optional[OdomState]:
         ax, ay, az = sample.ax, sample.ay, sample.az
@@ -118,15 +133,25 @@ class ImuDeadReckoner:
         ax_w = c * ax_b - s * ay_b
         ay_w = s * ax_b + c * ay_b
 
-        gyro_norm = math.sqrt(sample.gx * sample.gx + sample.gy * sample.gy + sample.gz * sample.gz)
+        gyro_norm = math.sqrt(
+            sample.gx * sample.gx + sample.gy * sample.gy + sample.gz * sample.gz
+        )
         accel_norm = math.sqrt(ax * ax + ay * ay + az * az)
-        stationary = (
-            self.enable_zupt
-            and abs(accel_norm - self.gravity) < self.zupt_accel_epsilon
+        sample_still = (
+            abs(accel_norm - self.gravity) < self.zupt_accel_epsilon
             and gyro_norm < self.zupt_gyro_epsilon
+            and math.hypot(ax_b, ay_b) < self.zupt_accel_epsilon
         )
 
-        if stationary:
+        # IMPORTANT: only zero velocity after sustained stillness.
+        # Instant ZUPT kills coasting (constant-velocity) motion where |a|≈g.
+        if sample_still:
+            self._still_sec += dt
+        else:
+            self._still_sec = 0.0
+
+        zupt_active = self.enable_zupt and self._still_sec >= self.zupt_hold_sec
+        if zupt_active:
             self.state.vx = 0.0
             self.state.vy = 0.0
         else:
@@ -139,10 +164,27 @@ class ImuDeadReckoner:
         self.state.x += dx
         self.state.y += dy
         self.state.distance_m += step
-        self.state.path_xy.append((self.state.x, self.state.y))
-        if len(self.state.path_xy) > self.path_max_poses:
-            self.state.path_xy = self.state.path_xy[-self.path_max_poses :]
 
+        appended = False
+        if not self.state.path_xy:
+            self.state.path_xy.append((self.state.x, self.state.y))
+            appended = True
+        else:
+            lx, ly = self.state.path_xy[-1]
+            if math.hypot(self.state.x - lx, self.state.y - ly) >= self.path_min_step_m:
+                self.state.path_xy.append((self.state.x, self.state.y))
+                appended = True
+                if len(self.state.path_xy) > self.path_max_poses:
+                    self.state.path_xy = self.state.path_xy[-self.path_max_poses :]
+
+        self.state.dt = dt
+        self.state.ax_body = ax_b
+        self.state.ay_body = ay_b
+        self.state.ax_world = ax_w
+        self.state.ay_world = ay_w
+        self.state.zupt_active = zupt_active
+        self.state.still_sec = self._still_sec
+        self.state.path_appended = appended
         return self.state
 
 

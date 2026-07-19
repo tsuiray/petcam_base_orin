@@ -48,10 +48,12 @@ class ImuOdometryNode(Node):
         self.declare_parameter('accel_in_g', False)
         self.declare_parameter('gravity', 9.80665)
         self.declare_parameter('enable_zupt', True)
-        self.declare_parameter('zupt_accel_epsilon', 0.35)
-        self.declare_parameter('zupt_gyro_epsilon', 0.08)
+        self.declare_parameter('zupt_accel_epsilon', 0.45)
+        self.declare_parameter('zupt_gyro_epsilon', 0.15)
+        self.declare_parameter('zupt_hold_sec', 0.35)
         self.declare_parameter('calibrate_on_start_sec', 1.0)
         self.declare_parameter('path_max_poses', 5000)
+        self.declare_parameter('path_min_step_m', 0.002)
         self.declare_parameter('publish_tf', True)
 
         self.frame_id = self.get_parameter('frame_id').value
@@ -65,9 +67,11 @@ class ImuOdometryNode(Node):
             enable_zupt=bool(self.get_parameter('enable_zupt').value),
             zupt_accel_epsilon=float(self.get_parameter('zupt_accel_epsilon').value),
             zupt_gyro_epsilon=float(self.get_parameter('zupt_gyro_epsilon').value),
+            zupt_hold_sec=float(self.get_parameter('zupt_hold_sec').value),
             max_dt_sec=float(self.get_parameter('max_dt_sec').value),
             min_dt_sec=float(self.get_parameter('min_dt_sec').value),
             path_max_poses=int(self.get_parameter('path_max_poses').value),
+            path_min_step_m=float(self.get_parameter('path_min_step_m').value),
             calibrate_on_start_sec=float(self.get_parameter('calibrate_on_start_sec').value),
         )
 
@@ -75,6 +79,7 @@ class ImuOdometryNode(Node):
         self.pose_pub = self.create_publisher(PoseStamped, '/create_map/pose', 10)
         self.odom_pub = self.create_publisher(Odometry, '/create_map/odom', 10)
         self.dist_pub = self.create_publisher(Float32, '/create_map/distance', 10)
+        self.debug_pub = self.create_publisher(Float64MultiArray, '/create_map/debug', 10)
         self.tf_broadcaster = TransformBroadcaster(self) if self.publish_tf else None
 
         imu_topic = self.get_parameter('imu_topic').value
@@ -96,7 +101,7 @@ class ImuOdometryNode(Node):
         self._path_msg.header.frame_id = self.frame_id
         self._msg_count = 0
         self.get_logger().info(
-            'create_map imu_odometry ready — waiting for ESP32 MPU6050 packets (~20 ms)'
+            'create_map imu_odometry ready — keep still ~1s for calib, then move robot'
         )
 
     def _stamp_to_sec(self, stamp) -> float:
@@ -154,11 +159,16 @@ class ImuOdometryNode(Node):
         pose.pose.orientation = yaw_to_quat(state.yaw)
         self.pose_pub.publish(pose)
 
-        self._path_msg.header.stamp = stamp
-        self._path_msg.poses.append(pose)
-        max_poses = int(self.get_parameter('path_max_poses').value)
-        if len(self._path_msg.poses) > max_poses:
-            self._path_msg.poses = self._path_msg.poses[-max_poses:]
+        # Only grow Path when robot actually moved (avoids "points++" at origin)
+        if state.path_appended or not self._path_msg.poses:
+            self._path_msg.header.stamp = stamp
+            if not self._path_msg.poses:
+                self._path_msg.poses.append(pose)
+            elif state.path_appended:
+                self._path_msg.poses.append(pose)
+            max_poses = int(self.get_parameter('path_max_poses').value)
+            if len(self._path_msg.poses) > max_poses:
+                self._path_msg.poses = self._path_msg.poses[-max_poses:]
         self.path_pub.publish(self._path_msg)
 
         odom = Odometry()
@@ -177,6 +187,23 @@ class ImuOdometryNode(Node):
         dist.data = float(state.distance_m)
         self.dist_pub.publish(dist)
 
+        dbg = Float64MultiArray()
+        dbg.data = [
+            float(state.dt),
+            float(state.ax_body),
+            float(state.ay_body),
+            float(state.ax_world),
+            float(state.ay_world),
+            float(state.vx),
+            float(state.vy),
+            1.0 if state.zupt_active else 0.0,
+            float(state.still_sec),
+            float(state.distance_m),
+            float(state.x),
+            float(state.y),
+        ]
+        self.debug_pub.publish(dbg)
+
         if self.tf_broadcaster is not None:
             tf = TransformStamped()
             tf.header.stamp = stamp
@@ -190,8 +217,11 @@ class ImuOdometryNode(Node):
 
         if self._msg_count % 50 == 0:
             self.get_logger().info(
-                f'pose=({state.x:.3f},{state.y:.3f}) yaw={math.degrees(state.yaw):.1f}deg '
-                f'distance={state.distance_m:.3f}m packets={self._msg_count}'
+                f'pose=({state.x:.3f},{state.y:.3f}) dist={state.distance_m:.3f}m '
+                f'v=({state.vx:.3f},{state.vy:.3f}) dt={state.dt*1000:.1f}ms '
+                f'a_xy=({state.ax_body:.2f},{state.ay_body:.2f}) '
+                f'zupt={"ON" if state.zupt_active else "off"} '
+                f'path_pts={len(self._path_msg.poses)}'
             )
 
 

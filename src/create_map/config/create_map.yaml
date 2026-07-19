@@ -11,40 +11,41 @@
 imu_odometry:
   ros__parameters:
     imu_topic: "/imu/data"
-    # Fallback only — ESP32 firmware does not publish this today
     raw_imu_topic: "/imu/raw"
     prefer_raw: false
 
     frame_id: "map"
     child_frame_id: "base_link"
 
-    # ESP32 IMU_PUBLISH_PERIOD_MS = 20 → expect ~0.02 s packet gaps
     max_dt_sec: 0.1
     min_dt_sec: 0.001
 
-    # mpu6050.cpp converts ±2g / ±250 dps into SI already
     accel_in_g: false
     gravity: 9.80665
 
+    # ZUPT only after sustained stillness (do NOT zero every sample — that
+    # kills coasting motion where |a|≈g and left distance stuck at 0).
     enable_zupt: true
-    zupt_accel_epsilon: 0.35
-    zupt_gyro_epsilon: 0.08
+    zupt_accel_epsilon: 0.45
+    zupt_gyro_epsilon: 0.15
+    zupt_hold_sec: 0.35
 
-    # Keep robot still ~1 s after link-up for horizontal bias
     calibrate_on_start_sec: 1.0
-
     path_max_poses: 5000
+    path_min_step_m: 0.002
     publish_tf: true
 
 map_viewer:
   ros__parameters:
     path_topic: "/create_map/path"
     pose_topic: "/create_map/pose"
+    distance_topic: "/create_map/distance"
+    debug_topic: "/create_map/debug"
     window_name: "PetCam create_map"
-    pixels_per_meter: 80.0
-    trail_thickness: 2
+    pixels_per_meter: 200.0
+    trail_thickness: 3
     show_grid: true
-    grid_spacing_m: 0.5
+    grid_spacing_m: 0.25
 
 mock_imu:
   ros__parameters:

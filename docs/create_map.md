@@ -71,8 +71,20 @@ Edit `src/create_map/config/create_map.yaml`:
 - `imu_topic` — match your ESP32 publisher
 - `accel_in_g` — true if accel units are g
 - `calibrate_on_start_sec` — keep robot still at start for bias
-- `enable_zupt` — zero velocity when nearly still (reduces drift)
+- `zupt_hold_sec` — only zero velocity after this long still (default 0.35 s)
+
+### If distance stays 0 / no trail
+
+1. Keep robot **still ~1 s** after launch (calibration).
+2. Then **push/move** the robot — coasting is OK now (ZUPT is delayed).
+3. Watch HUD: `dt` should be ~20 ms, `a_xy` should spike when you accelerate, `zupt: off` while moving.
+4. Terminal log every ~1 s shows `dist=` and `path_pts=`.
+
+```bash
+ros2 topic echo /create_map/debug --once
+# [dt, ax_b, ay_b, ax_w, ay_w, vx, vy, zupt, still_sec, distance, x, y]
+```
 
 ## Note on accuracy
 
-Accel double-integration drifts quickly. This app is the **first comms + visualization** pipeline; later we can fuse wheel odometry / vision. ZUPT + short calibration are included to keep the first demo usable.
+Accel double-integration drifts quickly. This app is the **first comms + visualization** pipeline; later we can fuse wheel odometry / vision.
