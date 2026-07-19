@@ -64,6 +64,29 @@ Orin create_map must use `imu_mode:=sim` (default):
 
 ```bash
 ./scripts/run_create_map.sh
-# look for: /imu/data rate: ~50 Hz (expect ~50 Hz / 20 ms per sample)
-# L-path should overlap on lap 2+
+# look for: create_map RX: ~50/50 Hz loss~0% ...
+# L-path should look like the SIM L after the first settle
 ```
+
+## Reliable delivery {#reliable-delivery}
+
+Today the link is **Wi‑Fi UDP + micro-ROS BEST_EFFORT**. UDP does **not** retransmit.
+If a sample is lost, create_map never sees that 20 ms of motion → L-laps will not
+overlap 100%. That is expected, not a map bug.
+
+| Approach | Retransmit? | Notes |
+|----------|-------------|--------|
+| **UDP + BEST_EFFORT** (current) | No | Light on ESP32; OK for real IMU; SIM overlap suffers |
+| **UDP + RELIABLE** (ROS 2 / XRCE reliable QoS) | Yes (RTPS repair) | Change ESP32 to `rclc_publisher_init_default` (not best_effort). Heavier; may still drop under bad Wi‑Fi |
+| **TCP** (`micro_ros_agent tcp4`) | Yes (TCP) | Orin already supports `transport:=tcp4`. ESP32 must use TCP Wi‑Fi transport (firmware change). More latency, usually fewer gaps |
+| **Sequence number in msg** | Detect only | Put sample index in an unused field; Orin logs gaps (cannot invent lost accel) |
+
+ROS 2 does **not** have a special “secure UDP that never loses packets.”  
+“Secure” usually means **DDS-Security** (auth/encryption), not loss-free delivery.  
+Loss-free ≈ **RELIABLE QoS** and/or **TCP**, with enough bandwidth and buffer.
+
+### Practical recommendation
+
+- **SIM demo / closed laps:** switch ESP32 publisher to **RELIABLE**, or use **TCP** agent+client.
+- **Real robot IMU at 50 Hz:** keep **BEST_EFFORT UDP**; accept occasional drops; use ZUPT / later camera SLAM for map quality.
+- Orin already logs `loss~N%` on the `create_map RX:` line so you can see Wi‑Fi quality.

@@ -75,6 +75,12 @@ class ImuOdometryNode(Node):
         # RX diagnostics: log first N samples fully, then every Nth sample.
         self.declare_parameter('log_rx_first_n', 5)
         self.declare_parameter('log_rx_every_n', 25)
+        # SIM helpers: wait for a≈0 settle before integrating (avoid mid-lap scribble),
+        # and snap pose to origin when a lap nearly closes (masks small UDP gaps).
+        self.declare_parameter('sim_wait_settle', True)
+        self.declare_parameter('sim_snap_lap', True)
+        self.declare_parameter('sim_lap_min_dist_m', 20.0)
+        self.declare_parameter('sim_origin_eps_m', 0.35)
 
         self.frame_id = self.get_parameter('frame_id').value
         self.child_frame_id = self.get_parameter('child_frame_id').value
@@ -128,6 +134,18 @@ class ImuOdometryNode(Node):
         self._log_rx_every_n = max(1, int(self.get_parameter('log_rx_every_n').value))
         self._auto_az: list[float] = []
         self._mode_locked = self.imu_mode != 'auto'
+        self._sim_wait_settle = bool(self.get_parameter('sim_wait_settle').value) and (
+            self.imu_mode == 'sim'
+        )
+        self._sim_snap_lap = bool(self.get_parameter('sim_snap_lap').value) and (
+            self.imu_mode == 'sim'
+        )
+        self._sim_armed = not self._sim_wait_settle
+        self._dist_at_lap = 0.0
+        self._lost_est_total = 0.0
+        self._expect_hz = 1.0 / max(
+            1e-6, float(self.get_parameter('default_dt_sec').value)
+        )
 
         if prefer_raw:
             raw_topic = self.get_parameter('raw_imu_topic').value
@@ -163,6 +181,11 @@ class ImuOdometryNode(Node):
             'Waiting for /imu/data — ESP32 SIM needs world-frame+fixed 20ms; '
             'REAL MPU needs imu_mode:=real'
         )
+        if self._sim_wait_settle:
+            self.get_logger().info(
+                'SIM: holding integration until first a≈0 settle sample '
+                '(avoids mid-lap scribble at connect)'
+            )
 
     def _mode_defaults(self):
         if self.imu_mode == 'real':
@@ -208,13 +231,19 @@ class ImuOdometryNode(Node):
             return
         hz = self._rate_count / elapsed
         self._last_hz = hz
-        expect = 1.0 / float(self.get_parameter('default_dt_sec').value)
+        expect = self._expect_hz
         if self._msg_count == 0:
             self.get_logger().warn(
                 f'create_map RX: 0 msgs on {self.imu_topic} in last {elapsed:.1f}s — '
                 'ESP32 Serial OK does not mean Orin received /imu/data'
             )
         else:
+            # Loss estimate vs ideal 50 Hz (UDP best-effort often drops some).
+            expect_n = expect * elapsed
+            got_n = float(self._rate_count)
+            lost_n = max(0.0, expect_n - got_n)
+            self._lost_est_total += lost_n
+            loss_pct = 100.0 * lost_n / expect_n if expect_n > 1.0 else 0.0
             rx = self._last_rx
             st = self.reckoner.state
             rx_s = (
@@ -223,14 +252,24 @@ class ImuOdometryNode(Node):
                 if rx is not None
                 else 'a=(?,?,?) g=(?,?,?)'
             )
+            armed = 'armed' if self._sim_armed else 'WAIT_SETTLE'
             self.get_logger().info(
-                f'create_map RX: {hz:.1f} Hz (expect ~{expect:.0f}) '
+                f'create_map RX: {hz:.1f}/{expect:.0f} Hz '
+                f'loss~{loss_pct:.0f}% (est lost {lost_n:.0f} this s, '
+                f'{self._lost_est_total:.0f} total) [{armed}] '
                 f'total={self._msg_count} integ={self.reckoner.samples_integrated} '
                 f'last[{rx_s}] → pose=({st.x:.3f},{st.y:.3f}) '
                 f'v=({st.vx:.3f},{st.vy:.3f}) dist={st.distance_m:.3f}m '
                 f'path_pts={len(self._path_msg.poses)} '
                 f'dt={st.dt * 1000:.1f}ms frame={self.reckoner.accel_frame}'
             )
+            if loss_pct > 15.0:
+                self.get_logger().warn(
+                    'High packet loss estimate — L-laps will not overlap 100%. '
+                    'UDP BEST_EFFORT cannot retransmit. Options: micro-ROS '
+                    'RELIABLE publisher, or agent tcp4 (needs ESP32 TCP transport). '
+                    'See docs/esp32_imu_contract.md#reliable-delivery'
+                )
         self._rate_count = 0
         self._rate_t0 = now
 
@@ -398,10 +437,57 @@ class ImuOdometryNode(Node):
         self._log_rx_sample(sample, 'raw')
         self._process(sample, now)
 
+    def _maybe_sim_gate(self, sample: ImuSample) -> bool:
+        """Return False to skip integration (still counts as RX)."""
+        if not self._sim_wait_settle or self._sim_armed:
+            return True
+        if math.hypot(sample.ax, sample.ay) < 1e-3 and abs(sample.gz) < 1e-3:
+            self._sim_armed = True
+            self.reckoner.reset()
+            self._path_msg.poses = []
+            self._dist_at_lap = 0.0
+            self.get_logger().info(
+                'SIM settle seen — start integrating from this corner (clean L)'
+            )
+            return True
+        return False
+
+    def _maybe_sim_snap_lap(self, state) -> None:
+        if not self._sim_snap_lap or state is None:
+            return
+        min_dist = float(self.get_parameter('sim_lap_min_dist_m').value)
+        eps = float(self.get_parameter('sim_origin_eps_m').value)
+        traveled = state.distance_m - self._dist_at_lap
+        if traveled < min_dist:
+            return
+        if math.hypot(state.x, state.y) > eps:
+            return
+        # Soft loop-closure for demo: UDP gaps accumulate; snap back to origin.
+        self.get_logger().info(
+            f'SIM lap snap: dist={state.distance_m:.2f}m near origin — '
+            f'reset pose for overlap (est lost samples ~{self._lost_est_total:.0f})'
+        )
+        self.reckoner.state.x = 0.0
+        self.reckoner.state.y = 0.0
+        self.reckoner.state.vx = 0.0
+        self.reckoner.state.vy = 0.0
+        self.reckoner.state.yaw = 0.0
+        self._dist_at_lap = state.distance_m
+        # Keep path history so previous laps stay drawn; next points overlay.
+
     def _process(self, sample: ImuSample, stamp) -> None:
         self._rate_count += 1
-        state = self.reckoner.update(sample)
         self._msg_count += 1
+        if not self._maybe_sim_gate(sample):
+            self._publish_debug(
+                ax_raw=sample.ax,
+                ay_raw=sample.ay,
+                path_pts=len(self._path_msg.poses),
+                integ=self.reckoner.samples_integrated,
+                status=0.0,
+            )
+            return
+        state = self.reckoner.update(sample)
         if state is None:
             self._calibrating = True
             if self._msg_count % 25 == 0:
@@ -419,6 +505,7 @@ class ImuOdometryNode(Node):
             return
 
         self._calibrating = False
+        self._maybe_sim_snap_lap(state)
         self._last_state = state
 
         pose = PoseStamped()

@@ -41,6 +41,14 @@ imu_odometry:
     path_min_step_m: 0.0005
     publish_tf: true
 
+    # SIM: wait for a≈0 before integrating; soft snap near origin each lap
+    sim_wait_settle: true
+    sim_snap_lap: true
+    sim_lap_min_dist_m: 20.0
+    sim_origin_eps_m: 0.35
+    log_rx_first_n: 5
+    log_rx_every_n: 25
+
 map_viewer:
   ros__parameters:
     path_topic: "/create_map/path"
